@@ -1,0 +1,9 @@
+{
+    "go.goroot": "/Users/caesar.tsai/.local/share/mise/installs/go/1.26.1",
+    "debug.javascript.defaultRuntimeExecutable": {
+        "pwa-node": "/Users/caesar.tsai/.local/share/mise/shims/node"
+    },
+    "go.alternateTools": {
+        "go": "/Users/caesar.tsai/.local/share/mise/shims/go"
+    }
+}
