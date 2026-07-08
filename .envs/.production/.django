@@ -1,0 +1,38 @@
+# General
+# ------------------------------------------------------------------------------
+# DJANGO_READ_DOT_ENV_FILE=True
+DJANGO_SETTINGS_MODULE=config.settings.production
+DJANGO_SECRET_KEY=fQNTFlAU05CaUcM4VC7JY1fHoDhg6jIDFZICzkVHkxBlmhHol2Wj95Z65MofKwvU
+DJANGO_ADMIN_URL=2X0abLwIP8rgxPqUkI4XJviOPG4RNbye/
+DJANGO_ALLOWED_HOSTS=.maiagent.ai
+
+# Security
+# ------------------------------------------------------------------------------
+# TIP: better off using DNS, however, redirect is OK too
+DJANGO_SECURE_SSL_REDIRECT=False
+
+# Email
+# ------------------------------------------------------------------------------
+DJANGO_SERVER_EMAIL=
+
+
+# django-allauth
+# ------------------------------------------------------------------------------
+DJANGO_ACCOUNT_ALLOW_REGISTRATION=True
+
+# Gunicorn
+# ------------------------------------------------------------------------------
+WEB_CONCURRENCY=4
+
+
+# Redis
+# ------------------------------------------------------------------------------
+REDIS_URL=redis://redis:6379/0
+
+# Celery
+# ------------------------------------------------------------------------------
+
+# Flower
+CELERY_FLOWER_USER=jvxixvXndkLxSuQzHPpjmCbNsARwkqGO
+CELERY_FLOWER_PASSWORD=QVqtAlmJwi5qxxaOX2tm1lL66wxmuJjaFQ8GoAhFdmrEhyrJKxpmvZPeGT71KMKv
+

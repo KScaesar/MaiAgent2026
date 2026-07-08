@@ -1,0 +1,7 @@
+# PostgreSQL
+# ------------------------------------------------------------------------------
+POSTGRES_HOST=postgres
+POSTGRES_PORT=5432
+POSTGRES_DB=maiagent_ai_django
+POSTGRES_USER=oPGXGMbFbjSBThvWKqBeclQhshczKYXm
+POSTGRES_PASSWORD=HjW5KjaQK1kphtSjBUc8NkWCbpQU5MQkZIBsRswbCN4DsyWKkltvQLtZeMqVMqph
