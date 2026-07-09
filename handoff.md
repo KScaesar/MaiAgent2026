@@ -162,3 +162,74 @@
   - 「一次只能一則 PENDING AI Message」規則的 enforce 點（拒絕新請求還是排隊）需要在第三項需求討論時決定。
   - AI Provider 抽象介面的具體方法簽名（例如 `messages` 參數的確切格式）尚未定案，屬於實作階段才會確定的細節。
 - **下一步指令建議**：接手的 AI 應該透過 `/brainstorming` 流程處理 PRD 第三項需求「API 與管理介面」，開始前建議先讀 spec1、spec2 全文，特別留意「同一 Conversation 一次只能一則 PENDING」規則的 enforce 責任已明確畫給這一項需求。使用者目前傾向先把四項需求都討論完、產出完整設計後才進入實作階段，暫不呼叫 `writing-plans`。
+
+---
+
+# AI Context Handoff: API 與管理介面（API & Admin Interface）設計討論
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：針對 `prd.md` 第三項功能需求「API 與管理介面」，設計提交查詢、查詢會話紀錄、更新場景設定三支 REST API，補上 spec2 明確留下的缺口（「一次只能一則 PENDING AI Message」的 enforce 責任、前端如何取得非同步生成結果），並設計 Django Admin 管理介面。
+- **成功指標**：產出一份經使用者逐步確認的設計文件（spec3），使用者審閱後可進入 `writing-plans` 或繼續討論 PRD 第四項需求。
+- **邏輯流**：透過 `/brainstorming` 流程，先確認認證/授權模型（RBAC，比較自訂 role 欄位 vs Django Group/Permission）→ 逐一釐清三支 API 的細節（提交查詢的建立層次與併發控制、查詢會話紀錄的分頁/全文檢索、場景設定的修改歷程）→ 深入討論前端取得 AI 回覆結果的機制（使用者提出 SSE，過程中糾正了「用兩個 Celery task 轉發 SSE」的技術誤解，並比較「單一 channel 手動過濾」vs「Django Channels group」的路由設計，用 redis-cli 指令實例驗證後定案）→ 安全性/效能考量（rate limiting）→ Django Admin 範圍 → 分段呈現架構/流程/endpoint 清單/錯誤處理並取得確認 → 寫入 spec3。
+- **輸入**：`prd.md` 第三項需求文字、spec1、spec2 全文。
+- **輸出**：新增 `docs/superpowers/specs/2026-07-09-api-admin-design.md`（spec3）。
+
+## 2. 決策背景 (Why)
+
+- **決策依據**：
+  - **RBAC 採 Django 內建 Group/Permission，不用自訂 role 欄位**：PRD 明確要求「業務人員能用 Django Admin 檢視管理對話記錄」，這正是 Group/Permission 系統的原生應用場景（Admin 本身就是用這套權限系統控制可見範圍），未來要加更細粒度權限不需要修改 model schema；自訂 role 欄位則需要手刻字串比對邏輯，且與 Admin 整合較弱。
+  - **提交查詢 API 分成兩支**（`POST /api/conversations/` 建立對話、`POST /api/conversations/{id}/messages/` 提交訊息）：責任分離清楚，符合 REST 資源層級概念，避免單一 API 語意不單一（upsert 邏輯容易出錯處理）。
+  - **409 Conflict 拒絕併發提交**（而非排隊）：實作最簡單、行為最可預測，補上 spec2 明確標記「規則本身的 enforce 點留給本需求」的缺口——本次設計主動在 API 層阻止規則被違反，而非僅依賴 spec2 的歷史查詢防禦性過濾。
+  - **前端取得 AI 回覆結果改用 SSE + Django Channels group**（而非輪詢）：使用者一開始提出 SSE 構想，但對 Celery 生命週期有誤解（以為可以用第二個 Celery task 轉發 SSE 訊息給瀏覽器）——已在對話中糾正：Celery worker 不持有、也不可能持有瀏覽器的 HTTP/SSE 連線，兩者是完全不同的 process。真正可行的橋接方式是 Celery task 完成後 publish 事件到 Redis，由**持有該 SSE 連線的 ASGI process** 訂閱並轉發。
+  - **Pub/Sub 路由採 Channels 內建 group 機制（每個 Conversation 一個 group），而非單一固定 channel + 手動過濾**：使用者一開始提出「單一固定字串 channel，payload 帶 conversation_id/user_id 供消費者自行過濾路由」，並自陳擔心「多消費者時不知道使用者連到哪個消費者」——這正是 Channels group 已經解決的問題。經解釋 group 底層是 Redis sorted set（`ZADD`/`ZRANGE`，成本等同一個 key，沒人訂閱時零成本），並用具體 `redis-cli` 指令（`ZADD`/`ZRANGE`/`RPUSH`/`BLPOP`）模擬驗證整個流程後，使用者確定改採 Channels group。
+  - **架構上維持 WSGI + ASGI 並存**（而非全面轉 ASGI）：一般 REST API 不需要 async，維持既有 WSGI/Gunicorn 改動最小；只有需要長連線的 SSE 端點獨立跑在 ASGI，透過 `asgi.py` 的 `ProtocolTypeRouter` 依路徑分流。
+  - **SSE 連線驗證採一次性短效 ticket（透過額外 API 換發），而非直接把長效 token 放 URL query param**：因為瀏覽器原生 `EventSource` 不支援自訂 `Authorization` header，必須透過 URL 傳遞身份資訊；但長效 token 若出現在 URL 容易被 log/瀏覽器歷史記錄留存造成重用風險，改為短 TTL（例如 60 秒）、用過即刪的 ticket，把風險窗口壓到最小。
+  - **SSE 推送只包含 Message 層級狀態變化（completed/failed），不推送 `Conversation.status` 轉 `PENDING_HUMAN`**：使用者質疑「這樣使用者會不會忙等、不知道發生什麼事」——已澄清 `FAILED` 事件本身就會推送給使用者（帶 error_message），使用者不會不明所以；`PENDING_HUMAN` 是給客服/管理者看的內部分派旗標，不是使用者關心的資訊，兩者受眾不同故分層。
+  - **提交查詢 API 加 DRF throttling**：因為每次提交都會觸發 Celery task 呼叫外部 AI API（有金錢成本、佔用 worker），需防止高頻請求造成帳單暴增或隊列堵塞——此點使用者一開始沒理解「為什麼提交查詢會觸發 AI API 呼叫」，經解釋 spec2 的流程（API 同步建 Message → 觸發 Celery task → task 呼叫 ai_providers.generate）後才確認需要。
+  - **列表查詢採 cursor-based pagination**：Conversation/Message 資料只會持續新增，cursor pagination 避免 offset pagination 在資料量增長/新資料插入時的重複遺漏問題，效能不隨頁數加深而下降。
+  - **場景設定 API 不記修改歷程/審核**：PRD 未要求審核流程，先維持簡單，未來若需要稽核可再引入 `django-simple-history`，不影響現有 API 介面。
+  - **Django Admin 管理範圍：客服人員只能改 `Conversation.status`，訊息內容不可編輯**：延續 spec2「訊息一旦建立即不可變（immutable）」的假設，PRD 提到的「監控與調整」具體收斂為狀態調整（例如手動將 `PENDING_HUMAN` 改回 `OPEN`/`CLOSED`），不開放編輯歷史訊息內容，維持稽核完整性。
+- **已排除方案**：
+  - 提交查詢 API 合一支自動 upsert Conversation——排除，API 語意不單一、錯誤處理邏輯較粗糙。
+  - 併發提交採「接受並排隊」——排除，會推翻 spec2 當初「同一時間點只能一則 PENDING」的假設，需要重新設計歷史查詢過濾邏輯。
+  - SSE 用兩個 Celery task 轉發訊息給瀏覽器——排除，技術上不可行（Celery worker 沒有、也不可能拿到瀏覽器的連線 socket）。
+  - SSE pub/sub 用單一固定 channel + payload 帶 id 手動過濾——排除，每個事件廣播給所有連線造成無關流量浪費，且未解決多 consumer instance 時的路由問題（使用者自己也點出這個未解問題）。
+  - 全面轉 ASGI（拿掉 WSGI）——排除，一般 REST API 不需要 async，全面轉換是不必要的架構變動。
+  - SSE 直接用長效 token 當 URL query param——排除，token 出現在 URL/log 中的重用風險較高。
+  - `PENDING_HUMAN` 轉換也透過 SSE 推送給使用者——排除，這是給客服/管理者看的內部狀態，非使用者關心的事件，混在一起會讓 SSE payload 語意複雜。
+  - SceneConfig 更新加修改歷程/審核機制——排除，PRD 未要求，先求簡單，需要時可後補不影響介面。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：本次設計**不涵蓋** AI 呼叫細節與 Celery 任務內部邏輯（見 spec2）、資料模型定義本身（見 spec1）、PRD 第四項「擴充性」需求（將另外討論）。不包含實際的 Python/DRF/Channels 程式碼。
+- **基礎假設**：
+  - 假設 Redis channel layer（`channels_redis`）的 group 機制行為與文件描述一致（ZADD/ZRANGE/RPUSH/BLPOP 模式）——這是根據 `channels_redis` 已知實作原理的說明，並非在本次對話中實際跑過 Python/Channels 驗證，僅用 redis-cli 指令模擬邏輯層面驗證，未跑過真正的 Channels consumer。
+  - 假設 SSE 連線驗證用的 one-time ticket 存於 Redis、TTL 60 秒足夠涵蓋「換票到建立 SSE 連線」的正常時間差，未實測極端網路延遲下是否會過期失敗。
+  - 假設「客服人員」與「管理者」的 Group 劃分（`customer_service`、`admin`）足以涵蓋 PRD 描述的業務人員需求，未考慮更細的部門/團隊層級隔離（PRD 未提及多租戶情境）。
+  - 假設全文檢索 `?q=` 參數的查詢實作（`SearchQuery` 比對 `search_vector`）不需要額外處理中文分詞（PostgreSQL 預設 `simple`/`english` config 對中文支援有限），此細節留待實作階段處理。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：
+  - 提交查詢遇到已有 PENDING AI Message → 回 409，前端需自行處理重試/等待邏輯，此行為僅在設計文件層級約定，未實測前端實際串接體感。
+  - AI 生成重試用盡失敗 → Message 轉 FAILED 並透過 SSE 推送，`Conversation.status` 轉 `PENDING_HUMAN` 不推送——此分層設計已與使用者確認合理，但依賴「前端會正確處理 `status=failed` 事件並顯示錯誤訊息」這個前端行為假設，本次設計未涉及前端實作。
+- **反例測試**：
+  - 目前設計文件未討論「SSE 連線中途斷線後前端如何重新換票、重新連線」的重試策略細節，只設計了初始連線的驗證流程與初始快照時序，斷線重連屬於實作階段需要補的細節。
+  - Ticket 一次性機制依賴 Redis 操作的原子性（驗證+刪除需為單一操作避免 race condition，例如用 `GETDEL` 或 Lua script），設計文件僅提及「驗證通過後立即刪除」，未明確指定要用哪個 Redis 原子操作實現，此為實作階段的坑。
+- **抗壓能力**：
+  - Channels group 機制設計上天生支援多 consumer instance 水平擴展（Redis 幫忙做路由），但完全沒有實際壓測過高並發連線下的表現，已列入 spec3「未來擴充摘要」。
+  - `api` app 與 `realtime` app 皆依賴 `conversations` app 的 model、彼此獨立，理論上可分別擴充，但兩者之間目前沒有實際程式碼驗證過整合是否順暢（例如 Channels consumer 如何共用 DRF 的權限檢查邏輯，避免重複寫兩份權限判斷）。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**：
+  - 已完成：RBAC 模型、三支 API 細節、SSE+Channels 即時推送架構（含糾正使用者對 Celery 生命週期的誤解、用 redis-cli 驗證 group 機制）、安全性/效能考量、Django Admin 範圍，皆已寫入 `docs/superpowers/specs/2026-07-09-api-admin-design.md`。
+  - 已完成：spec3 自我審查（無 TBD、架構與流程/決策一致、範圍聚焦在 API+Admin）。
+  - 已完成：spec3 已 git commit（commit `cf00994`）。
+  - 待處理：使用者尚未完成「審閱已寫入的 spec3 檔案」這一步（`/brainstorming` 流程要求使用者確認後才進入 `writing-plans`）。
+- **待解決問題**：
+  - PRD 第四項需求「擴充性」（多 AI 模型/複雜路由邏輯、動態調整權重）尚未開始討論。
+  - SSE 斷線重連策略、ticket 刪除的原子性實作方式，尚未定案，留待實作階段或後續補充討論。
+  - 全文檢索中文分詞支援程度未驗證。
+- **下一步指令建議**：接手的 AI 應該先請使用者審閱 `docs/superpowers/specs/2026-07-09-api-admin-design.md`，確認無誤後可呼叫 `writing-plans` 產出實作計畫；若使用者想繼續談，則透過 `/brainstorming` 流程處理 PRD 第四項需求「擴充性」。開始前建議先讀 spec1/spec2/spec3 全文，特別留意 spec3 裡「多 AI 模型/路由邏輯」目前僅停留在 spec1 的 `SceneConfig.default_settings` JSONField 彈性欄位層級，尚未有具體路由機制設計，這正是第四項需求要解決的核心問題。
