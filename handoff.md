@@ -97,3 +97,68 @@
 - **待解決問題**：
   - PRD 其餘三項需求（AI 自動回覆流程、API 與管理介面、擴充性）尚未開始討論。
 - **下一步指令建議**：接手的 AI 應該先請使用者審閱 `docs/superpowers/specs/2026-07-08-conversation-management-design.md`，確認無誤後呼叫 `writing-plans` 產出實作計畫；若使用者想繼續談其他需求，則回到 `/brainstorming` 流程處理 PRD 下一項需求。
+
+---
+
+# AI Context Handoff: AI 自動回覆流程（AI Auto-Reply Flow）設計討論
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：針對 `prd.md` 第二項功能需求「AI 自動回覆流程」，設計非同步生成 AI 回覆的 Celery 任務與 AI 呼叫抽象層，同時檢查並修正第一項需求 spec（`2026-07-08-conversation-management-design.md`，下稱 spec1）裡明確標記「尚未設計」的重試機制與失敗轉真人規則。
+- **成功指標**：產出一份經使用者逐步確認的設計文件（spec2），並回頭修正 spec1 裡與 spec2 衝突/過時的部分；使用者審閱後可進入 `writing-plans`。
+- **邏輯流**：透過 `/brainstorming` 流程，先確認範圍界線（本次完全不談 API endpoint，只談 Celery 任務）→ 逐一釐清重試策略、失敗轉人工、AI Message 建立時機、AI 呼叫抽象層架構、歷史訊息查詢的一致性問題 → 分段呈現架構/流程/任務細節/測試考量並取得確認 → 寫入 spec2 → 回頭修正 spec1。
+- **輸入**：`prd.md` 第二項需求文字、spec1 全文、liteLLM 官方文件（透過 subagent 研究）。
+- **輸出**：
+  - 新增 `docs/superpowers/specs/2026-07-09-ai-auto-reply-design.md`（spec2）
+  - 修正 `docs/superpowers/specs/2026-07-08-conversation-management-design.md`（spec1：標註修正紀錄、更新流程圖說明、決策 6/7 補上修正備註）
+
+## 2. 決策背景 (Why)
+
+- **決策依據**：
+  - **範圍排除 API endpoint**：PRD 把「提交查詢」「查詢回覆結果」寫在第二項需求裡，但使用者判斷這些 API 的實作細節（權限、序列化、分頁）應該留給第三項需求「API 與管理介面」一起講，這次只談 Celery 任務本身。
+  - **AI Message(PENDING) 改為 API 同步建立**：原 spec1 流程圖是「非同步任務開始執行後才建立 AI Message」，會讓前端在 task 真正開始跑之前查不到任何 AI 訊息行（worker 忙、排隊中的空窗期）。改為 API 接到查詢當下就同步建好 USER + AI(PENDING) 兩筆 Message，AI Message 的 id 傳進 Celery task，task 只負責更新它。
+  - **有限次數自動重試 + 失敗轉 `PENDING_HUMAN`**：補上 spec1 明確標記「尚未設計」的缺口——重試期間 Message 維持 `PENDING`（不新增 RETRYING 狀態，前端體感沒差別）；重試用盡才寫 `FAILED` 並自動把 `Conversation.status` 轉 `PENDING_HUMAN`。
+  - **獨立 `ai_providers` app + 抽象介面（`generate`/`agenerate`/`stream`/`astream`/`batch_generate`）**：使用者計畫用 liteLLM 包裝真實呼叫，並另外設計一個獨立介面讓 liteLLM 實作與模擬用的 `DelayedFailureSimulator` 都能滿足它。命名選用貼近 liteLLM/OpenAI SDK 慣例（`generate`系列）而非 LangChain 的 `invoke` 系列，因為底層實作目標就是 liteLLM，命名一致可降低認知負擔（此結論來自派出的研究 subagent，發現 liteLLM 本身沒有正式 ABC/Protocol，是一組扁平函數，且內建 `mock_response` 參數可直接用於構造結構一致的模擬回應）。
+  - **`DelayedFailureSimulator` 內部包一層 `litellm.completion(mock_response=...)`**：而非手刻假的 `ModelResponse` 結構，確保模擬回應與真實 API 回應結構完全一致，未來替換成真實 provider 時呼叫端不用改。
+  - **Celery task 只傳 `ai_message_id`，不傳 `conversation_id` 或整包對話內容**：`ai_message_id` 可透過 FK 反查 `conversation_id`，資訊不會遺失；反之若只傳 `conversation_id`，當同一 Conversation 同時有多筆 `PENDING` AI Message 時會無法判斷該更新哪一筆。整包對話內容不當參數傳遞，因為 Celery 參數會序列化進 broker、且 task 真正執行時間可能晚於觸發時間，改成 task 執行時才即時查 DB 才能保證資料新鮮度。
+  - **歷史查詢強制 `filter(status="completed")`**：使用者提出「如何確保拿到 PENDING 訊息時，其實歷史對話已經完成」的資料一致性疑慮。解法不是靠時間點檢查（有競態窗口），而是查詢條件本身做防禦性過濾——不論是否有其他流程違反「同一 Conversation 一次只能一則 PENDING」的業務規則，未完成/失敗的訊息永遠不會被當作上下文送進 LLM。
+  - **任務執行採 `select_for_update()` 鎖 + 執行前檢查狀態（idempotency guard）**：防止同一任務被重複排程執行、或多個 worker 同時處理同一筆訊息的競態。
+- **已排除方案**：
+  - 這次一併設計「提交查詢」「查詢回覆結果」API 的高階行為——排除，範圍完全留給第三項需求。
+  - 重試期間新增 `RETRYING` 狀態——排除，前端/管理者體感上跟 `PENDING` 沒有實際用途差異。
+  - 重試次數用盡後 `Conversation.status` 保持 `OPEN` 不自動轉換——排除，會讓 `PENDING_HUMAN` 狀態變成永遠不會被觸發的死狀態。
+  - Celery task 直接把整包對話內容當參數傳遞——排除，序列化成本高且有資料過期風險。
+  - 只傳 `conversation_id` 給 task——排除，同一 Conversation 有多筆 PENDING 訊息時無法精確定位目標。
+  - AI Provider 抽象介面命名採 LangChain 的 `invoke`/`ainvoke`——排除，底層實作目標是 liteLLM（OpenAI SDK 風格），命名不一致會增加認知負擔。
+  - `Simulator` 自己手刻假的 response 結構，不依賴 liteLLM——排除，難以保證跟真實 API 結構一致。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：本次設計**不涵蓋** API endpoint 實作與細節、Django Admin 介面——留給「API 與管理介面」需求。不包含實際的 Python/Celery 程式碼（使用者明確要求這階段只做設計文件，不落地實作）。
+- **基礎假設**：
+  - 假設「同一 Conversation 一次只能有一則 PENDING AI Message」這個業務規則會在未來的 API 層被 enforce（例如拒絕新請求或排隊），本次設計只做防禦性過濾（歷史查詢排除非 COMPLETED 訊息），沒有主動阻止規則被違反。
+  - 假設訊息一旦建立即不可變（immutable）——使用者提出「使用者取消訊息或重新編輯」的延伸考量，經討論後判斷這是全新功能需求（PRD 未提及），列入未來擴充/邊界條件，本次不設計。
+  - 假設 LLM KV cache 最佳化（prompt prefix 穩定性）暫不處理，與「訊息不可變」假設相輔相成，留待未來效能調優階段。
+  - 假設 `AI_BACKEND`（litellm | simulator）是環境層級的全域設定，不放進 `SceneConfig.default_settings`（`SceneConfig` 只放業務參數如 model 名稱），這個切分未經使用者以外的人驗證。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：AI provider 呼叫失敗 → Celery 有限次數重試（3 次、exponential backoff + jitter）→ 仍失敗則 Message 標記 `FAILED`、Conversation 轉 `PENDING_HUMAN`。此路徑已設計但**未實作驗證**，重試次數/backoff 參數是否合理未經實測調校。
+- **反例測試**：
+  - 若「一次只能一則 PENDING」規則未來未被 API 層正確 enforce，歷史查詢的防禦性過濾（`filter(status="completed")`）可保證系統不會把未完成訊息送進 LLM context，但**不會**阻止規則被違反本身（例如浪費運算資源同時處理多筆查詢）——此為已知限制，非本次設計要解決的問題。
+  - `select_for_update()` 鎖的併發安全設計目前只是文件層級的約定，未透過實際併發測試（例如兩個 worker 同時搶同一筆 task）驗證鎖是否真正生效。
+- **抗壓能力**：AI 呼叫抽象層（`ai_providers` app）與 `conversations` app 解耦，未來要換真實 provider、加新 provider（例如直接接 OpenAI SDK 而非透過 liteLLM）、或加串流/批次功能，都只需在 `ai_providers` 內擴充，不影響 `conversations` 既有邏輯；但目前完全沒有實測過 `DelayedFailureSimulator` 的失敗機率分佈是否真的符合統計預期，也沒驗證過 liteLLM 版本升級是否會改變 `mock_response` 的行為。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**：
+  - 已完成：範圍界定（排除 API）、重試/失敗轉人工策略、AI Message 建立時機修正、AI 呼叫抽象層架構（含派 subagent 研究 liteLLM 命名慣例與 `mock_response` 機制）、Celery 任務參數與併發安全設計、歷史查詢一致性問題討論，皆已寫入 `docs/superpowers/specs/2026-07-09-ai-auto-reply-design.md`。
+  - 已完成：回頭修正 spec1（`2026-07-08-conversation-management-design.md`）——加註修正紀錄、流程圖說明、決策 6/7 補上修正備註，原文保留供歷史脈絡參考。
+  - 已完成：spec2 自我審查（無 TBD/佔位文字、架構與流程/決策一致、範圍聚焦）。
+  - 已完成：spec1、spec2 已 git commit。
+  - 待處理：使用者尚未完成「審閱已寫入的 spec2 檔案」這一步（`/brainstorming` 流程要求使用者確認後才進入 `writing-plans`）；目前使用者選擇先不進入實作，改為繼續討論 PRD 第三項需求。
+- **待解決問題**：
+  - PRD 第三項需求「API 與管理介面」（提交查詢/查詢會話紀錄/更新場景設定 API、Django Admin 管理介面）與第四項「擴充性」尚未開始討論。
+  - 「一次只能一則 PENDING AI Message」規則的 enforce 點（拒絕新請求還是排隊）需要在第三項需求討論時決定。
+  - AI Provider 抽象介面的具體方法簽名（例如 `messages` 參數的確切格式）尚未定案，屬於實作階段才會確定的細節。
+- **下一步指令建議**：接手的 AI 應該透過 `/brainstorming` 流程處理 PRD 第三項需求「API 與管理介面」，開始前建議先讀 spec1、spec2 全文，特別留意「同一 Conversation 一次只能一則 PENDING」規則的 enforce 責任已明確畫給這一項需求。使用者目前傾向先把四項需求都討論完、產出完整設計後才進入實作階段，暫不呼叫 `writing-plans`。
