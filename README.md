@@ -5,6 +5,42 @@ Behold My Awesome Project!
 [![Built with Cookiecutter Django](https://img.shields.io/badge/built%20with-Cookiecutter%20Django-ff69b4.svg?logo=cookiecutter)](https://github.com/cookiecutter/cookiecutter-django/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
+[TOC]
+
+## 開發過程與規格文件導覽
+
+本專案的原始需求來自面試出題方提供的 [`prd.md`](./prd.md)（測驗說明、功能需求、評分重點、附加挑戰）。開發流程「先設計、後測試、再實作」：
+
+1. **需求釐清與設計**（`/brainstorming`）：針對 `prd.md` 的四項功能需求，逐一討論架構、資料模型、決策取捨，產出四份逐項設計文件，並彙整成一份整合版設計文件。
+2. **具體化為範例規格**（`/spec-by-example`）：把整合版設計的抽象規則轉成 Given-When-Then 範例情境——**這份是本專案實際遵循的頂級規格（specification）**，測試與實作都以它為準。
+3. **TDD 紅燈 → 綠燈**：依範例規格先寫會失敗的 pytest 測試，再補最小實作讓測試通過。
+
+### 頂級規格：Specification by Example
+
+- [docs/superpowers/specs/2026-07-11-spec-by-example.md](./docs/superpowers/specs/2026-07-11-spec-by-example.md)：把設計拆成六大功能區塊（提交查詢/狀態控制、Celery 生成任務、Simulator、RBAC、全文檢索、SSE）的規則、範例、Given-When-Then 情境。**想理解「系統實際行為/測試在驗證什麼」，看這份就夠。**
+
+### 子項目：逐輪設計文件（`docs/superpowers/specs/`）
+
+以下文件是產出頂級規格前的討論過程紀錄，記錄「為什麼這樣設計、排除了哪些方案」，供追溯決策脈絡用，非開發時遵循的規格本身：
+
+- [2026-07-08-conversation-management-design.md][spec-conversation]：對話管理（`Conversation`/`Message` 兩層資料模型、狀態機、軟刪除、全文檢索欄位）。
+- [2026-07-09-ai-auto-reply-design.md][spec-ai-reply]：AI 自動回覆流程（Celery 任務、重試/轉人工、`ai_providers` 抽象介面）。
+- [2026-07-09-api-admin-design.md][spec-api-admin]：API 與管理介面（RBAC、三支 REST API、SSE 即時推送、Django Admin 範圍）。
+- [2026-07-10-scalability-model-routing-design.md][spec-scalability]：擴充性／多模型路由（`ModelRoute` 資料模型、`litellm.Router` 選模與容錯機制）。
+- [2026-07-10-final-design.md][spec-final]：整合版設計文件，彙總以上四份並解決跨文件的衝突與修正（頂級規格即由此文件轉寫而成）。
+
+若想了解某個決策為何如此（例如「為什麼選 `litellm.Router` 而非手刻演算法」），回頭查對應日期的文件即可；日常開發只需對照頂級規格。
+
+[spec-conversation]: ./docs/superpowers/specs/2026-07-08-conversation-management-design.md
+[spec-ai-reply]: ./docs/superpowers/specs/2026-07-09-ai-auto-reply-design.md
+[spec-api-admin]: ./docs/superpowers/specs/2026-07-09-api-admin-design.md
+[spec-scalability]: ./docs/superpowers/specs/2026-07-10-scalability-model-routing-design.md
+[spec-final]: ./docs/superpowers/specs/2026-07-10-final-design.md
+
+### 開發日誌：`handoff.md`
+
+[`handoff.md`](./handoff.md) 是每一輪 AI 協作開發交接時寫下的過程紀錄，依時間序追加，每輪皆說明「做了什麼、為什麼這樣決策、邊界與假設、風險與尚未驗證的部分、下一步建議」。它記錄的是**開發過程本身**（討論脈絡、踩過的坑、待辦事項），不是規格——想知道系統該有什麼行為看上面的 spec，想知道某個實作細節或已知限制從何而來、下一步該做什麼，看 `handoff.md`。
+
 ## 測試流程
 
 ### 沒有本機 Postgres/Redis 時，用 Docker Compose 跑測試
