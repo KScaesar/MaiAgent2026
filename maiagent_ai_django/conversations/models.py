@@ -10,6 +10,13 @@ from django.utils.translation import gettext_lazy as _
 from model_utils.models import TimeStampedModel
 
 
+class SoftDeleteManager(models.Manager):
+    """預設排除軟刪除紀錄；`all_objects` 可查詢包含已刪除的全部紀錄。"""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(is_deleted=False)
+
+
 class SceneConfig(TimeStampedModel):
     class SceneType(models.TextChoices):
         CUSTOMER_SERVICE = "customer_service", _("Customer Service")
@@ -53,6 +60,9 @@ class Conversation(TimeStampedModel):
     is_deleted = models.BooleanField(default=False)
     deleted_at = models.DateTimeField(null=True, blank=True)
 
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
+
     class Meta:
         ordering = ["-created"]
 
@@ -85,7 +95,13 @@ class Message(TimeStampedModel):
     )
     model_used = models.CharField(max_length=255, null=True, blank=True)  # noqa: DJ001
     error_message = models.TextField(null=True, blank=True)  # noqa: DJ001
+    metadata = models.JSONField(default=dict, blank=True)
     search_vector = SearchVectorField(null=True, blank=True)
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
+
+    objects = SoftDeleteManager()
+    all_objects = models.Manager()
 
     class Meta:
         ordering = ["created", "id"]

@@ -456,3 +456,76 @@
   - `get_provider` 的 `AI_BACKEND` 切換邏輯、`LiteLLMProvider` 分支、Scene 無啟用 `ModelRoute` 時的 edge case，皆未被任何測試涵蓋。
   - `DEFAULT_THROTTLE_RATES` 的 `"60/min"` 為暫定值，未與業務方確認過實際限流需求。
 - **下一步指令建議**：接手的 AI 應該先確認使用者是否要（a）繼續補 RBAC/全文檢索/SSE 的紅燈測試與實作，或（b）先針對現有已綠燈的 `conversations`/`ai_providers`/`api` 三個 app 補上 Django Admin 介面（spec3 有設計但本輪未實作）。若要動 SSE，需先評估是否新增 `channels`/`channels_redis` 依賴並重新走一次 docker compose build。啟動測試環境時記得用 `docker compose -f docker-compose.local.yml up -d postgres redis` 起依賴服務，再用 `docker compose -f docker-compose.local.yml run --rm django uv run pytest` 跑測試（README 已記錄此流程）。
+
+---
+
+# AI Context Handoff: 完成 spec-by-example 全部六項功能（TDD）並驗證 Admin 頁面
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：依據 `docs/superpowers/specs/2026-07-11-spec-by-example.md` 的六項功能（提交查詢/狀態控制、AI 自動回覆 Celery task、模擬 AI 呼叫、RBAC 權限矩陣、全文檢索、SSE 即時推送），採 TDD（紅燈先寫 Given-When-Then 測試、綠燈補最小實作）逐一補齊，最終讓整個測試套件全部通過。承接上一輪 handoff：功能一～三（提交查詢、Celery task、simulator）當時已綠燈，本輪從 `ai_providers.factory` 測試缺口開始，一路做到功能四～六與 Django Admin。
+- **成功指標**：`docker compose -f docker-compose.local.yml run --rm django pytest` 全數通過；`python manage.py check` 與 `makemigrations --check --dry-run` 皆無異常；使用者能實際在瀏覽器登入 `/admin/` 看到客製化的 Conversation/Message/SceneConfig 管理介面。
+- **邏輯流**：
+  1. 補 `ai_providers/factory.py` 的 `_build_model_list`/`get_provider` 測試，順手把 `LiteLLMProvider` 抽成獨立 `litellm_provider.py`。
+  2. 補 `conversations/models.py` 測試，發現 `Message` 缺少 DBML 規格中的 `is_deleted`/`deleted_at`/`metadata` 欄位，補上並實作 `SoftDeleteManager`（`objects` 排除已刪除、`all_objects` 保留全部）。
+  3. 一次性實作功能四（RBAC）+ 功能五（全文檢索）：`GET /api/conversations/`、`/{id}/`、`/api/scenes/`（角色分流 serializer + 建立權限），並在過程中發現 Postgres `simple` text search config 對無空白的中文長字串會整段變成單一 lexeme，`to_tsquery` 無法命中子字串（用 `to_tsvector('simple', ...)` 實測驗證），因此 `?q=` 改用 `icontains` 而非設計文件原定的 `SearchQuery`。
+  4. 補 `conversations/admin.py`：`ConversationAdmin`（客服 Group 唯讀除 `status` 外的所有欄位，管理者無限制）、`MessageAdmin`（`content`/`metadata`/`error_message`/`model_used` 一律唯讀）、`SceneConfigAdmin`（`ModelRoute` TabularInline）。
+  5. 實作功能六 SSE：新增 `channels`/`channels-redis`/`daphne` 依賴（`uv add`，重新 `docker compose build django`）、`realtime` app（`tickets.py` 一次性 Redis ticket、`consumers.py` 的 `ConversationEventsConsumer`）、`config/asgi.py`（`ProtocolTypeRouter` 分流 `/sse/...` 與其餘 Django ASGI）、`POST /api/conversations/{id}/sse-ticket/`，並把 `conversations/tasks.py` 的 `push_message_event`（原本是空函式）串接到 `channel_layer.group_send`。
+  6. 最後手動啟動 `docker compose up -d django`、確認既有 superuser（`admin@example.com`）密碼仍有效、seed 一筆 demo `SceneConfig`/`Conversation`/`Message`，並在 `README.md` 補上「查看 Admin 頁面」章節（前置準備/步驟/如何查資料），交給使用者實際在瀏覽器驗證。
+- **輸入**：`docs/superpowers/specs/2026-07-11-spec-by-example.md`（權威測試場景來源）、`2026-07-10-final-design.md`（架構/API/Admin 設計依據）、既有已綠燈的 skeleton 程式碼。
+- **輸出**：見下方「延續執行」的檔案清單；`README.md` 新增「查看 Admin 頁面」章節；`handoff.md`（本篇）。
+
+## 2. 決策背景 (Why)
+
+- **`?q=` 全文檢索改用 `icontains` 而非 `SearchQuery`**：實測 `SELECT to_tsvector('simple', '請協助退貨流程說明')` 得到單一 lexeme `'請協助退貨流程說明':1`，`to_tsquery('simple', '退貨')` 無法命中——這正是 final design 文件「Open Questions」#3 標註的未驗證風險，本輪實際驗證後確認問題存在。優先讓 spec-by-example 的具體情境（子字串搜尋「退貨」）能通過，因此改用 `content__icontains`；`search_vector` 欄位仍照原設計由 `post_save` signal 填值（`conversations/signals.py`），保留未來換裝 CJK 分詞擴充套件（如 zhparser）後平滑切換回 `SearchQuery` 的路徑。
+- **`Message` 補上 `is_deleted`/`deleted_at`/`metadata` 欄位**：final design 的 DBML 早就定義了這些欄位，但先前 skeleton 只在 `Conversation` 實作了軟刪除，`Message` 漏掉；`metadata` 也是 skeleton 缺漏。撰寫 model 測試時發現規格與程式碼不一致，依 DBML 補齊並產生對應 migration（`0002_message_deleted_at_message_is_deleted.py`、`0003_message_metadata.py`）。
+- **`SoftDeleteManager` 同時掛在 `Conversation`/`Message`，且提供 `all_objects`**：測試考量章節明確要求「軟刪除排除（自訂 Manager）」；用 `all_objects` 保留全量查詢管道（例如 signal 內部更新 `search_vector` 用 `all_objects` 避免因為某筆已軟刪除而漏更新）。
+- **SSE 用 `AsyncHttpConsumer` 但覆寫 `http_request`，不用預設的一次性請求/回應語意**：Channels 內建 `AsyncHttpConsumer.http_request` 在 `handle()` 返回後一律呼叫 `disconnect()` + `raise StopConsumer()`，這與 SSE 需要「`handle()` 送完初始快照後仍要保持連線、持續接收 `group_send` 事件」互相矛盾。若在 `handle()` 內自行寫一個等待迴圈手動呼叫 `self.channel_receive()`，會與框架內建的 `await_many_dispatch` 背景 task（同樣在監聽同一個 `channel_name`）搶同一則訊息，造成訊息漏接、測試間歇性 timeout（此為本輪除錯時實際觀察到的現象，非理論推測）。最終解法：加一個 `self._keep_alive`旗標，只有 ticket 驗證失敗時才維持「一次性回應後立即斷線」，驗證成功後讓 `handle()` 正常返回、交由框架內建 dispatch 迴圈把後續 `group_send` 事件路由給 `conversation_message()` handler，直到真正的 `http.disconnect` 才觸發清理。
+- **測試不用 `pytest-asyncio`（專案未安裝），改用 `asgiref.sync.async_to_sync` 包裝**：`channels.testing.ApplicationCommunicator` 系列工具都是 async-only；為了不引入新的測試框架依賴、維持與專案既有同步 pytest 風格一致，SSE 相關測試一律用 `async_to_sync(scenario)()` 的模式包裝整段 async 情境。
+- **`docker compose exec` 需手動帶 `DATABASE_URL`**：驗證 Admin 頁面時發現 `exec` 進容器操作會連線失敗（嘗試走 unix socket），因為 `DATABASE_URL` 是由 `compose/production/django/entrypoint` 腳本根據 `POSTGRES_*` 組出來的環境變數，只有 `docker compose run`（會走 Dockerfile 的 `ENTRYPOINT`）才會執行到；`exec` 直接進正在跑的容器繞過 entrypoint。此為上一輪 handoff 已記錄過的已知限制，本輪再次踩到並在 README 補了明確操作指令備忘。
+- **新增 `channels`/`channels-redis`/`daphne` 依賴用 `uv add`**：遵循 CLAUDE.md「依賴管理與執行一律採用 uv」的規範；新增後需要 `docker compose build django` 讓新依賴進到 image 內（`docker compose run --rm` 不會自動重建 image）。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：
+  - `POST /api/conversations/`（建立新對話本身）未實作——spec-by-example 的所有情境都假設對話已存在（用 factory 直接建立），final design 的 endpoint 清單雖列出此端點，但非本輪測試驅動範圍，故未補。
+  - `PATCH /api/scenes/{id}/` 只做了最基本的 `SceneConfigAdminSerializer` 綁定，未針對「修改歷程」補測試（spec 本身也明確表示不記修改歷程）。
+  - 本機 `compose/local/django/start` 仍用 `runserver_plus`（WSGI），未切換成走 `daphne`/ASGI；也就是說 `config/asgi.py` 的路由目前只在測試（`ApplicationCommunicator` 直接呼叫）與未來正式部署時生效，**本機 `docker compose up` 起來的 dev server 實際上還沒有真的把 `/sse/...` 端點串起來**（見下方風險）。
+- **基礎假設**：
+  - 假設使用者最終驗收標準是「spec-by-example 裡的具體 Given-When-Then 情境要能通過測試」，優先度高於嚴格遵照 final design 文件字面（例如 `?q=` 改用 `icontains` 就是在兩者衝突時選擇前者）。
+  - 假設 `metadata` 欄位目前只补了 model schema，`tasks.py` 尚未真正寫入實際的 token 用量等資訊（design 提到但目前 mock provider 回傳的是 `Mock()` 物件，若真的塞進 JSONField 會序列化失敗，故本輪刻意不動這段邏輯）。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：
+  - 若使用者透過 `docker compose up` 起的本機環境嘗試真的用瀏覽器連 SSE endpoint（`http://localhost:8000/sse/conversations/{id}/?ticket=...`），會拿到 404 或不預期行為，因為 `runserver_plus` 是 WSGI dev server，不會使用 `config/asgi.py`；SSE 目前只在測試環境下用 `ApplicationCommunicator` 直接驅動 ASGI application 才驗證過。若要在本機瀏覽器實測 SSE，需要另外調整 `compose/local/django/start`（改用 `daphne config.asgi:application` 或等效指令），這是明確的下一步待辦。
+  - 全文檢索若未來資料量變大、或有非 CJK 語言的長文字，`icontains` 沒有索引加速（`search_vector` 的 GIN index 目前形同虛設，因為查詢邏輯沒有真的用它），效能會隨資料量線性下降；這是刻意的取捨，需要在文件/未來排期中明確記錄，避免被誤認為是「已完成的全文檢索」。
+- **反例測試**：
+  - SSE consumer 的除錯過程中實際觀察到「兩個並發監聽者搶同一則 channel_layer 訊息」的競態（詳見決策背景），此為 Channels `AsyncHttpConsumer` 與手動 `channel_receive()` 混用時的真實陷阱，已透過改寫 `http_request` 解決，未來若有人想在其他 consumer 沿用「手動迴圈」寫法要特別小心這個陷阱。
+  - `docker compose exec` 需手動帶 `DATABASE_URL` 已在本輪與上一輪都重複踩到，README 已補文字提醒，降低下次重複踩雷機率。
+- **抗壓能力**：全部 96 個測試（含新增的 SSE/admin/RBAC/search 測試）在同一組 Postgres/Redis 容器上連續執行 3 次皆穩定通過，未觀察到 flaky 現象；SSE 測試雖然用真實 Redis channel layer（非 in-memory mock），仍能在數秒內穩定完成，顯示目前的實作對測試環境是可靠的，但尚未在真正高並發情境下壓測過。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**：
+  - 已完成（測試綠燈）：
+    - `ai_providers/factory.py` + `litellm_provider.py`（新增 `ai_providers/tests/test_factory.py`）
+    - `conversations/models.py`（`SoftDeleteManager`、`Message.is_deleted/deleted_at/metadata`，新增 `conversations/tests/test_models.py`，migrations `0002`/`0003`）
+    - `conversations/signals.py`（`post_save` 自動填 `search_vector`）+ `conversations/apps.py`（`ready()` 註冊 signal）
+    - `api/permissions.py`（`is_admin`/`is_customer_service`/`IsAdmin`）
+    - `api/serializers.py`（`ConversationSerializer`/`MessageSerializer`/`SceneConfigPublicSerializer`/`SceneConfigAdminSerializer`）
+    - `api/views.py`（`ConversationListView`/`ConversationDetailView`/`ConversationMessagesView`（GET+POST 合併）/`MessageDetailView`/`SceneListCreateView`/`SceneDetailView`/`SSETicketView`）+ `api/urls.py`
+    - 新增測試：`api/tests/test_conversations_list.py`、`test_scenes.py`、`test_sse_ticket.py`
+    - `conversations/admin.py`（`ConversationAdmin`/`MessageAdmin`/`SceneConfigAdmin`，新增 `conversations/tests/test_admin.py`）
+    - `realtime/` 全新 app（`tickets.py`/`consumers.py`/`routing.py`/`apps.py`，測試 `test_tickets.py`/`test_consumers.py`）
+    - `config/asgi.py`（`ProtocolTypeRouter`）、`config/settings/base.py`（新增 `channels`/`daphne` INSTALLED_APPS、`ASGI_APPLICATION`、`CHANNEL_LAYERS`、`LOCAL_APPS` 加入 `realtime`）
+    - `conversations/tasks.py` 的 `push_message_event` 改為真正呼叫 `channel_layer.group_send`
+    - `pyproject.toml`/`uv.lock` 新增 `channels`/`channels-redis`/`daphne`
+    - `README.md` 新增「查看 Admin 頁面」章節
+  - 已完成（人工驗證）：`docker compose up -d django` 啟動、確認既有 superuser `admin@example.com`/`AdminPass123!` 仍可登入、seed 一筆 demo `SceneConfig`（含兩個 `ModelRoute`）+ `Conversation` + 兩則 `Message`，供使用者在瀏覽器實際查看 Admin 客製化介面。
+  - **尚未 git commit**：本輪所有程式碼變更（含新 app、新 migration、新依賴）目前都還是 working tree 的未提交狀態，需要使用者確認後才 commit。
+- **待解決問題**：
+  - `compose/local/django/start` 未切換成 ASGI（daphne），SSE 端點在「本機瀏覽器實際連線」情境下還無法真正運作，只在測試環境驗證過。
+  - `?q=` 全文檢索用 `icontains` 屬於暫時性折衷，`search_vector`/GIN index 目前沒有被實際查詢用到；若未來要處理大量資料或中文分詞，需要重新評估（例如導入 `zhparser` 或改用 trigram 索引）。
+  - `POST /api/conversations/` 建立對話端點、`metadata` 欄位的實際寫入邏輯（token 用量等）均未實作。
+- **下一步指令建議**：接手的 AI 應該先跟使用者確認是否要 commit 這批變更；若要讓 SSE 真的能在瀏覽器（`EventSource`）測試，下一步是調整 `compose/local/django/start`（或新增一個 daphne 專用 service）讓 ASGI 路由真正生效，並實際用瀏覽器或 `curl -N` 驗證一次 SSE 事件流。

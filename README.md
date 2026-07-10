@@ -26,6 +26,46 @@ docker compose -f docker-compose.local.yml run --rm django uv run pytest
 - **關閉但保留資料**：`docker compose -f docker-compose.local.yml stop`（之後用 `start` 或 `up -d` 復原）。
 - **完全清除**（含資料庫資料）：`docker compose -f docker-compose.local.yml down -v`。
 
+## 查看 Admin 頁面（Conversations / Messages / Scene configs）
+
+### 前置準備
+
+- Docker 已安裝並可執行 `docker compose`。
+- 專案根目錄下的 `.envs/.local/.django`、`.envs/.local/.postgres` 已存在（cookiecutter-django 產生專案時建立）。
+
+### 步驟
+
+```bash
+# 1. 啟動完整服務（postgres/redis/mailpit/django），背景執行
+docker compose -f docker-compose.local.yml up -d
+
+# 2. 確認 migrations 已套用（首次啟動或有新 migration 時，容器啟動時的 /entrypoint 會自動跑一次，
+#    也可手動再跑一次確認）
+docker compose -f docker-compose.local.yml run --rm django python manage.py migrate
+
+# 3. 建立一組可登入 Admin 的 superuser（若尚未建立過）
+docker compose -f docker-compose.local.yml run --rm django python manage.py createsuperuser
+```
+
+> 若要用 `docker compose exec` 而非 `run` 進容器操作（例如額外用 shell 查資料），
+> 要注意 `exec` 不會經過 `/entrypoint` 腳本，`DATABASE_URL` 不會自動組出來，
+> 需要另外手動帶入，例如：
+> `docker compose -f docker-compose.local.yml exec -e DATABASE_URL="postgres://<POSTGRES_USER>:<POSTGRES_PASSWORD>@postgres:5432/<POSTGRES_DB>" django python manage.py shell`
+> （帳密可從 `.envs/.local/.postgres` 取得）。
+
+### 進入 Admin 查看資料
+
+1. 瀏覽器開啟 <http://localhost:8000/admin/>，用上一步建立的帳密登入。
+2. 左側選單 **CONVERSATIONS** 分類下可看到三個資料表：
+   - **Scene configs**：場景設定，編輯頁內有 `ModelRoute`（多模型路由）inline 表格，可直接調整 `model_name`/`order`/`weight`/`is_enabled`。
+   - **Conversations**：list 頁可依 `scene`/`status` 篩選；點進單筆對話，可看到底下訊息的唯讀 inline 列表。
+   - **Messages**：`content`/`model_used`/`error_message`/`metadata` 皆為唯讀欄位（訊息不可變），可用關鍵字搜尋 `content`。
+3. 若資料庫是空的（尚未透過 API 建立過任何對話），Admin 頁面會是空清單；可先用 `python manage.py shell` 手動建立 `SceneConfig`/`Conversation`/`Message` 測試資料，或透過 API 提交查詢來產生資料。
+
+**實際畫面（證據圖）**：`Conversation` 編輯頁，可看到 `scene`/`status` 欄位，以及底下 `Messages` 唯讀 inline（`content`/`status`/`model_used` 皆不可編輯）：
+
+![Django Admin - Conversation detail with read-only Messages inline](./admin-conversation-detail-screenshot.png)
+
 ## Settings
 
 Moved to [settings](https://cookiecutter-django.readthedocs.io/en/latest/1-getting-started/settings.html).

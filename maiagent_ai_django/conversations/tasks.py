@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+from asgiref.sync import async_to_sync
 from celery import shared_task
+from channels.layers import get_channel_layer
 
 from maiagent_ai_django.ai_providers.factory import get_provider
 from maiagent_ai_django.conversations.models import Conversation
@@ -13,10 +15,16 @@ def push_message_event(
     status: str,
     **extra,
 ) -> None:
-    """推送 Message 層級狀態變化事件。
+    """透過 Django Channels group_send 推送 Message 層級狀態變化事件給訂閱中的 SSE 連線。"""
+    channel_layer = get_channel_layer()
+    if channel_layer is None:
+        return
 
-    實際透過 Django Channels group_send 推送給前端 SSE 連線, 留待 realtime app 實作。
-    """
+    payload = {"message_id": message_id, "status": status, **extra}
+    async_to_sync(channel_layer.group_send)(
+        f"conv_{conversation_id}",
+        {"type": "conversation.message", "payload": payload},
+    )
 
 
 @shared_task
@@ -58,7 +66,12 @@ def generate_ai_reply(message_id: str) -> None:
         conversation.status = Conversation.Status.PENDING_HUMAN
         conversation.save(update_fields=["status"])
 
-        push_message_event(str(conversation.id), str(message.id), message.status)
+        push_message_event(
+            str(conversation.id),
+            str(message.id),
+            message.status,
+            error_message=message.error_message,
+        )
         return
 
     message.status = Message.Status.COMPLETED
@@ -66,4 +79,9 @@ def generate_ai_reply(message_id: str) -> None:
     message.model_used = response.model
     message.save(update_fields=["status", "content", "model_used"])
 
-    push_message_event(str(conversation.id), str(message.id), message.status)
+    push_message_event(
+        str(conversation.id),
+        str(message.id),
+        message.status,
+        content=message.content,
+    )
