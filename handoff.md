@@ -233,3 +233,75 @@
   - SSE 斷線重連策略、ticket 刪除的原子性實作方式，尚未定案，留待實作階段或後續補充討論。
   - 全文檢索中文分詞支援程度未驗證。
 - **下一步指令建議**：接手的 AI 應該先請使用者審閱 `docs/superpowers/specs/2026-07-09-api-admin-design.md`，確認無誤後可呼叫 `writing-plans` 產出實作計畫；若使用者想繼續談，則透過 `/brainstorming` 流程處理 PRD 第四項需求「擴充性」。開始前建議先讀 spec1/spec2/spec3 全文，特別留意 spec3 裡「多 AI 模型/路由邏輯」目前僅停留在 spec1 的 `SceneConfig.default_settings` JSONField 彈性欄位層級，尚未有具體路由機制設計，這正是第四項需求要解決的核心問題。
+
+---
+
+# AI Context Handoff: 擴充性（Scalability）— 多 AI 模型路由設計討論
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：針對 `prd.md` 第四項功能需求「擴充性」與附加挑戰「多 AI 模型支持」，設計一個機制讓每個 Scene 可設定多個候選 AI 模型，由系統依規則自動選擇並容錯，管理人員可動態調整權重與路由邏輯；同時把 PRD「進階搜尋功能」附加挑戰的涵蓋狀況（已在 spec1/spec3 完成）記錄進本輪討論。
+- **成功指標**：產出一份經使用者逐步確認的設計文件（spec4），並回頭修正 spec2 裡與新設計衝突的 `AIProvider` 介面/Celery 重試設計；使用者審閱 spec4 後可決定是否進入 `writing-plans`。
+- **邏輯流**：透過 `/brainstorming` 流程，先確認範圍深度（要含具體路由機制，非僅文字帶過）→ 澄清「多模型路由」概念本身（使用者一開始不理解此詞）→ 逐一定案資料模型歸屬（新增 `ModelRoute` model，非塞進既有 JSONField）→ 選模演算法（加權隨機、分層優先度、跨層 fallback）→ 澄清「根據場景自動選模型」是否等於「AI 自動判斷場景」（使用者提出質疑，確認場景仍延續 spec1 假設為外部指定屬性）→ 派 subagent 研究 `litellm.Router` 官方能力 → 使用者要求改用 Router 取代手刻演算法、術語對齊套件用法 → 用 before/after 程式碼具體說明 `AIProvider` 介面改動 → 定案並寫入 spec4、回頭修正 spec1/spec2/spec3。
+- **輸入**：`prd.md` 第四項需求文字與附加挑戰、spec1/spec2/spec3 全文、liteLLM 官方文件（透過 subagent 研究 `litellm.Router`）。
+- **輸出**：
+  - 新增 `docs/superpowers/specs/2026-07-10-scalability-model-routing-design.md`（spec4）
+  - 修正 `docs/superpowers/specs/2026-07-08-conversation-management-design.md`（spec1：決策 3、未來擴充摘要表補修正紀錄）
+  - 修正 `docs/superpowers/specs/2026-07-09-ai-auto-reply-design.md`（spec2：`AIProvider` 介面、`factory.get_provider`、Celery 重試設計皆補修正紀錄，說明改由 `litellm.Router` 取代）
+  - 修正 `docs/superpowers/specs/2026-07-09-api-admin-design.md`（spec3：Django Admin 章節補 `SceneConfigAdmin`/`ModelRoute` inline 說明）
+
+## 2. 決策背景 (Why)
+
+- **決策依據**：
+  - **範圍含具體路由機制，而非僅文字帶過**：PRD 主要需求段落只寫「設計時考慮可擴充性」，但附加挑戰明確要求「設計一個機制」，使用者選擇把附加挑戰的具體要求一併做完，而非留白。
+  - **新增獨立 `ModelRoute` model，與 `SceneConfig` 一對多關聯**：比起把候選清單塞進既有 `SceneConfig.default_settings` JSONField，結構化欄位讓管理人員能在 Django Admin 直接編輯權重/啟用狀態，也方便查詢統計，不用手改 JSON 結構。
+  - **改採 `litellm.Router` 取代手刻選模演算法**：派 subagent 研究後發現 `Router` 的 `order`（分層優先度）與 `weight`（層內加權隨機）參數幾乎完全對應原本手動設計的「分層優先度 + 層內加權隨機 + 跨層 fallback」語意，且內建 failover（`enable_weighted_failover`）。使用者判斷應直接依賴套件既有實作、術語也對齊套件用法（`order`/`weight`，不自創 `priority` 等詞），避免重複造輪子與額外測試維護成本。
+  - **失敗處理改用 Router 預設行為（一失敗立即換同層下一候選）**：原本讨論中曾定案「同一模型重試到上限才換下一個」，但 Router 官方預設行為是一失敗就換候選，並非對同一 deployment 先重試多次。使用者選擇改採 Router 開箱即用行為，取代原先定案（記錄於已排除方案，避免文件內部矛盾）。
+  - **拿掉 Celery 層 `autoretry`**：Router 內部的跨模型 failover 已是完整的失敗容錯機制；若再疊加整流程層級的 Celery 重試，等於把「所有候選都試過仍失敗」的流程原封不動重跑一次，對系統性故障（如 API 本身掛掉）沒有幫助，只會拉長延遲。此為對 spec2 的實質修正，非僅補充。
+  - **`AIProvider.agenerate` 拿掉 `model` 參數**：因為選模資訊的「決定時機」從「呼叫當下由外部傳入字串」變成「建構 provider 時，依 DB 裡的 `ModelRoute` 資料組出 `Router` 設定」；一個 Scene 現在可能對應多個模型，一個字串參數已經裝不下這個資訊量。此為對 spec2 介面簽名的具體修正，已用 before/after 程式碼向使用者展示。
+  - **`ModelRoute` 只透過 Django Admin inline 管理，不開額外 DRF API**：目前唯一情境是「管理人員後台手動操作」，Django Admin 內建的 inline 編輯機制已足夠，不需要多寫 serializer/view；spec3 既有的「更新場景設定」API 服務的是前端/其他系統的程式化呼叫情境，兩者受眾不同。
+  - **`Message` 新增 `model_used` 欄位**：記錄實際成功呼叫的模型名稱（取自 liteLLM `ModelResponse.model`），供日後分析各模型使用比例/成功率，也是管理人員調整權重的參考依據。
+  - **模型識別直接存 litellm 相容字串，不另建 `AIModel` 登錄表**：現階段候選模型數量有限，額外一張表的驗證好處不足以抵銷維護成本（YAGNI）。
+  - **不含「回覆模板」路由**：PRD 附加挑戰同時提到模型與模板，但使用者選擇這次只做模型路由，模板路由涉及不同的 prompt 策略設計，範圍不同，留待未來需求。
+  - **場景判定維持 spec1 既有假設**：使用者一度誤以為「自動選擇模型」暗示系統要用 AI 重新判斷這次對話屬於哪個場景；經釐清後確認場景仍是建立 Conversation 時外部指定的固定屬性，本次只自動化「已知場景 → 選模型」這一步。
+- **已排除方案**：
+  - 僅論述現有設計（`SceneConfig.default_settings` JSONField）為何已具擴充性，不設計新機制——排除，使用者要求含具體路由機制。
+  - 直接擴充 `SceneConfig.default_settings` JSON 結構存路由清單——排除，Admin 編輯 JSON 體驗差，也難做欄位層級驗證。
+  - 完全手刻加權隨機 + 分層 + fallback 演算法——排除，`litellm.Router` 已提供且測試過相同邏輯。
+  - 同一模型重試到上限才 fallback 換下一個——排除，改採 Router 預設「一失敗就換候選」。
+  - 保留 Celery autoretry 疊加在 Router fallback 之上——排除，對系統性故障沒有幫助，只拉長延遲。
+  - Fallback 深度限制「最多跨 2 個 priority 層」——排除（此為討論中途的暫定決策，改用 Router 原生機制後不再由程式碼限制層數，改為完全交給管理人員透過 `ModelRoute` 筆數決定，避免文件前後矛盾）。
+  - 新增 `AIModel` 登錄表，`ModelRoute` 用 FK 引用——排除，候選模型數量有限，多一張表不划算。
+  - `ModelRoute` 調整也開放 DRF API——排除，目前只有後台手動操作情境，Admin inline 已足夠。
+  - AI 自動推論場景——排除，延續 spec1 假設，場景是外部指定的固定屬性。
+  - OpenRouter（託管閘道服務）作為多模型路由方案——排除（subagent 研究後提出），路由邏輯會落在第三方雲端服務，與「管理人員在自己 Django Admin 改權重」的需求衝突。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：本次設計**不涵蓋**「回覆模板」路由、AI 自動分類/推論場景、`ModelRoute` 的程式化（DRF API）調整介面。PRD 附加挑戰「進階搜尋功能」已由 spec1/spec3 涵蓋，本文件僅記錄對照關係，不重複設計。
+- **基礎假設**：
+  - 假設每次 Celery task 執行時即時從 `ModelRoute` 資料表重建 `litellm.Router` 實例（而非常駐 process 內快取），換取管理人員改權重後「即時生效」，但犧牲一點點效能（多一次 DB 查詢 + 物件建構），本次設計不做快取最佳化。
+  - 假設 `model_group` 命名 `f"scene-{scene.id}"` 與 Scene 一對一綁定；若未來需要多個 Scene 共用同一組路由設定，需要重新設計對應關係。
+  - 假設 `litellm.Router` 的 `enable_weighted_failover` 行為與官方文件描述一致（同層一失敗即換候選，同層試完才跨層）——這是根據 subagent 研究官方文件與原始碼得出的結論，並未在本次對話中實際執行 Python 程式碼驗證，也未驗證同層只剩一個候選時的 edge case 行為。
+  - 假設同一個 Scene 底下允許同一模型出現在不同 `order` 層而不加唯一性限制，目前無明確需求會用到這個彈性，但也不主動禁止（YAGNI）。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：`litellm.Router` 把某 Scene 底下所有已啟用的候選模型（依 order 分層、層內加權隨機）都試過仍失敗後才拋出例外，Celery task 捕捉到即直接判定 `Message.status=FAILED`、`Conversation.status=PENDING_HUMAN`，不再整流程重跑。此路徑已設計但**未實作驗證**，Router 內部 failover 的實際次數/延遲表現未經實測。
+- **反例測試**：
+  - 若某個 Scene 只設定一筆 `ModelRoute`（單一候選），Router 的分層/加權邏輯退化成單模型直接呼叫，理論上行為應與 spec2 原始設計等價，但本次未實測驗證這個邊界情況。
+  - Router 官方文件描述的「靜態 `model_list`」與本設計「每次 task 動態重建」的搭配方式，未實際跑過 Python/litellm 驗證是否有預期外的初始化成本或行為差異，僅為文件層級推論。
+- **抗壓能力**：`ModelRoute` 與既有 `SceneConfig`/`Conversation`/`Message` 解耦，新增/停用/調整候選模型都只需改 `ModelRoute` 資料，不影響既有資料結構；但目前完全沒有實測過同一 Scene 底下候選模型數量很多（例如 10+ 筆）時，Router 建構與選模的效能表現。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**：
+  - 已完成：範圍確認（含具體路由機制）、「多模型路由」概念澄清、資料模型設計（`ModelRoute`）、選模演算法定案（改採 `litellm.Router`，術語對齊 `order`/`weight`）、失敗處理與 Celery 重試簡化、`AIProvider` 介面修正（含 before/after 程式碼展示）、Admin 管理方式、`Message.model_used` 欄位，皆已寫入 `docs/superpowers/specs/2026-07-10-scalability-model-routing-design.md`。
+  - 已完成：spec4 自我審查時發現並修正一處內部矛盾——「fallback 最多跨 2 個 priority 層」的暫定決策與後續採用 Router 原生機制（不限層數，改由管理人員設定筆數決定）衝突，已在文件內加註取代說明。
+  - 已完成：回頭修正 spec1（決策 3、未來擴充摘要表）、spec2（`AIProvider` 介面簽名、`factory.get_provider`、Celery 重試策略三處補修正紀錄）、spec3（Django Admin 章節補 `SceneConfigAdmin`/`ModelRoute` inline）。
+  - 已確認：使用者看過 handoff 記錄的進度後，確定要 commit 這次的異動（新增 spec4 + 修正 spec1/spec2/spec3），準備進行 git commit。
+  - 待處理：使用者尚未完成「審閱已寫入的 spec4 檔案」這一步（`/brainstorming` 流程要求使用者確認後才進入 `writing-plans`）——commit 只是把設計文件存進版本控制，不等於使用者已核准內容，仍需走完審閱步驟才能進 `writing-plans`。
+- **待解決問題**：
+  - `litellm.Router` 的 `enable_weighted_failover` edge case（同層剩一個候選、`model_list` 動態重建的初始化成本）尚未實測驗證。
+  - PRD 四項功能需求皆已完成設計討論（對話管理、AI 自動回覆流程、API 與管理介面、擴充性），下一步理論上可進入 `writing-plans` 產出實作計畫，但需使用者先逐一審閱四份 spec。
+- **下一步指令建議**：commit 完成後，接手的 AI 應請使用者逐一審閱四份 spec（尤其是 spec4，這是最新產出、尚未經確認），確認無誤後可呼叫 `writing-plans` 產出實作計畫——這將是 PRD 四項功能需求首次全部進入實作階段的時間點。若使用者要求修改設計內容，需重新走 spec 自我審查再請使用者確認。
