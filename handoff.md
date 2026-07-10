@@ -305,3 +305,73 @@
   - `litellm.Router` 的 `enable_weighted_failover` edge case（同層剩一個候選、`model_list` 動態重建的初始化成本）尚未實測驗證。
   - PRD 四項功能需求皆已完成設計討論（對話管理、AI 自動回覆流程、API 與管理介面、擴充性），下一步理論上可進入 `writing-plans` 產出實作計畫，但需使用者先逐一審閱四份 spec。
 - **下一步指令建議**：commit 完成後，接手的 AI 應請使用者逐一審閱四份 spec（尤其是 spec4，這是最新產出、尚未經確認），確認無誤後可呼叫 `writing-plans` 產出實作計畫——這將是 PRD 四項功能需求首次全部進入實作階段的時間點。若使用者要求修改設計內容，需重新走 spec 自我審查再請使用者確認。
+
+---
+
+# AI Context Handoff: Specification by Example + 第一版紅燈測試
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：把 `2026-07-10-final-design.md`（整合版設計文件）的抽象規則轉化為具體、可獨立閱讀的 Specification by Example 文件，再依此文件用 pytest 撰寫「第一版本紅燈測試」，作為後續實作的先行規格。
+- **成功指標**：
+  - 產出一份涵蓋設計文件核心業務規則的 spec-by-example 文件（Rules + Examples 表格 + Given-When-Then + Open Questions）。
+  - 產出一組會因「尚未實作」而失敗（而非語法錯誤）的 pytest 測試，覆蓋提交查詢 API、`generate_ai_reply` Celery task、`DelayedFailureSimulator` 三個核心流程的 Normal/Edge/Error 情境，且測試工具在專案內保持單一（不混用 `unittest.mock` 與 `pytest-mock`）。
+- **邏輯流**：
+  1. 用 `/spec-by-example` 技能讀 `final-design.md` + `prd.md`，依 PO/Dev/QA 三角色產出六大功能區塊（提交查詢與狀態控制、Celery 生成任務、Simulator、RBAC、全文檢索、SSE）的規則/範例/GWT/Open Questions。
+  2. 使用者追問「規格有提到怎麼拿到用戶的所有過往對話嗎」——確認 `GET /api/conversations/` 有涵蓋但 spec-by-example 文件未特別寫成獨立情境，已標記為可補充項目（尚未補上）。
+  3. 用 `/testing-golang` 技能（使用者要求套用其 TDD/BDD 原則但改寫成 Python/pytest 慣例）針對 spec-by-example 的功能一（提交查詢）、功能二（Celery task）、功能三（Simulator）撰寫紅燈測試；探查現有專案結構（cookiecutter-django，只有 `users` app，`conversations`/`ai_providers`/`api` 尚未建立）以確認測試會因 `ModuleNotFoundError` 失敗（正確的紅燈原因）而非語法錯誤。第一版曾誤用標準庫 `unittest.mock.patch`（理由是專案當時未安裝 `pytest-mock`）。
+  4. 使用者質疑測試檔案目錄佈局「不像 python」——WebSearch 查證 pytest 官方文件（inlined vs external 兩種官方認可佈局，官方對新專案建議 external），並確認這個專案本身混用兩種慣例（`users/tests/` inlined、根目錄 `tests/` external）；用 `AskUserQuestion` 讓使用者選擇，使用者選擇**維持 inlined**（與現有 `users/tests/` 一致），故測試檔案不搬動。
+  5. 使用者糾正：「缺少 pytest-mock 就安裝，不要使用 unittest，一個 Project 不要引入多個測試工具」——改用 `uv add --group dev pytest-mock` 安裝依賴（釘死版本 `==3.15.1`，比照專案既有依賴皆用精確版號的慣例），並把三個測試檔案內所有 `unittest.mock.patch`/`Mock` 改寫成 `mocker` fixture（pytest-mock 提供），確保全專案測試只用單一 mocking 工具。
+- **輸入**：`docs/superpowers/specs/2026-07-10-final-design.md`、`prd.md`、現有專案程式碼結構（`maiagent_ai_django/users/`）。
+- **輸出**：
+  - 新增 `docs/superpowers/specs/2026-07-11-spec-by-example.md`
+  - 新增 `maiagent_ai_django/conversations/tests/factories.py`、`test_tasks.py`
+  - 新增 `maiagent_ai_django/ai_providers/tests/test_simulator.py`
+  - 新增 `maiagent_ai_django/api/tests/conftest.py`、`test_submit_message.py`
+  - 修改 `pyproject.toml`（新增 dev 依賴 `pytest-mock==3.15.1`）、`uv.lock`
+
+## 2. 決策背景 (Why)
+
+- **決策依據**：
+  - **spec-by-example 聚焦六大功能區塊，不重寫架構說明**：避免與 `final-design.md` 內容重複，只萃取「規則 → 具體情境 → 預期結果」，讓開發/測試/PO 能各自獨立閱讀某一情境而不需回頭查架構圖。
+  - **紅燈測試範圍收斂到功能一/二/三**（提交查詢、Celery task、Simulator），不含 RBAC/全文檢索/SSE：這三個是 PRD「AI 自動回覆流程」的核心链路，且不需要額外決定 Channels/permission class 的模組路徑就能先驅動介面設計；RBAC/搜尋/SSE 需要更多尚未定案的細節（例如 URL name、consumer 路徑），留待後續版本避免測試假設過多。
+  - **改用 `pytest-mock`（`mocker` fixture）而非標準庫 `unittest.mock`**：使用者明確糾正——專案內的 mocking 工具應該只有一種，缺少套件就補裝，不要為了省一個依賴而在測試裡混用兩套 API（`unittest.mock.patch` 的 context manager 風格 vs 未來其他測試可能用的 `mocker.patch` 直接呼叫風格）。已用 `uv add --group dev pytest-mock` 安裝並釘版號，三個測試檔案全部改寫為 `mocker` fixture 呼叫。
+  - **測試目錄維持 inlined（`conversations/tests/`、`ai_providers/tests/`、`api/tests/`）**：使用者原先質疑這佈局「不像 python」，經 WebSearch 查證 pytest 官方文件後發現兩種佈局都是官方認可的合法選項，且這個 cookiecutter-django 專案既有的 `users/tests/` 本來就是 inlined，用 `AskUserQuestion` 讓使用者決定後，使用者選擇維持一致性（inlined），非 external。
+  - **測試依賴的內部介面（`get_provider`、`push_message_event`、`DelayedFailureSimulator` 建構簽名等）先用假設值撰寫，並在檔案 docstring 標註「設計假設」**：因為這些屬於實作階段才會定案的細節（`final-design.md` 本身也標記為未實測/未定案），測試需要一個具體介面才能寫得出來，用註解方式明確這是暫定假設而非最終定案，方便實作者對照調整而非誤以為是既定規格。
+  - **併發測試（Example #5）用 `threading.Barrier` + `pytest.mark.django_db(transaction=True)` 模擬，`mocker.patch` 在主執行緒一次性套用（不放進各 thread 內個別 patch）**：因為要驗證「同一 transaction 內的狀態檢查」在真實併發下是否只有一個請求成功，需要多個真實 DB connection 同時操作；`generate_ai_reply.delay` 的 mock 與併發行為本身無關，只需在主執行緒套用一次即可涵蓋所有 thread 呼叫，避免多執行緒各自呼叫 `mocker.patch`（其設計是自動於測試結束時還原，非 context manager 語意，不適合放進每個 thread 裡個別開關）。
+- **已排除方案**：
+  - 一次寫完六大功能區塊的紅燈測試——排除，範圍過大且 RBAC/SSE/搜尋牽涉的模組路徑/URL 命名尚未有足夠依據可寫，容易產生大量錯誤假設，選擇先做核心 AI 回覆链路。
+  - 把測試搬到專案根目錄 `tests/`（external 佈局）——排除，使用者在 `AskUserQuestion` 明確選擇維持與現有 `users/tests/` 一致的 inlined 佈局。
+  - 用標準庫 `unittest.mock` 取代 `pytest-mock` 以避免新增依賴——排除（使用者明確糾正），一個專案的測試 mocking 工具應保持單一，缺依賴就直接安裝，不要因小失大混用兩套 API。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：本次**不涵蓋** RBAC 權限矩陣、全文檢索、SSE 即時推送三個功能區塊的紅燈測試（spec-by-example 文件本身有涵蓋這三塊的規則/範例/GWT，但測試留待後續版本）；也不涵蓋「查詢我的對話清單」（`GET /api/conversations/`）的獨立 Examples 段落（使用者提問後確認有缺口，但尚未實際補上文件內容）。
+- **基礎假設**：
+  - 假設 `Conversation.Status`/`Message.Status`/`Message.SenderType` 會實作成 Django `TextChoices`（測試直接引用 `Conversation.Status.OPEN` 等）。
+  - 假設 Celery task 內部會有 `get_provider`、`push_message_event` 兩個可被 `mocker.patch` 的呼叫點（後者封裝 `channel_layer.group_send`）。
+  - 假設 `DelayedFailureSimulator` 建構簽名為 `(router, model_group, failure_rate, fail_models, delay_range)`，對應 `final-design.md` 描述的「全域失敗機率」「指定候選必敗清單」「人工延遲範圍」三個可注入參數。
+  - 假設 API 成功回應 body 含 `user_message_id`/`ai_message_id`，409 回應 body 含 `code` 欄位——這些鍵名是本次測試撰寫時的具體化假設，`final-design.md` 只描述語意未定義確切 JSON 結構。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：目前所有新增的紅燈測試在 collection 階段就會因為 `conversations`/`ai_providers`/`api` 三個 app 完全不存在而拋出 `ModuleNotFoundError`（已用 `uv run pytest --collect-only` 在改用 `mocker` fixture 後重新驗證三個檔案皆如此），這是預期中的紅燈狀態，但也代表**測試目前完全無法提供任何执行期的斷言回饋**——要等到最基本的 model/task/simulator 骨架落地後，才能看到真正因斷言失敗而非 import 失敗的紅燈，進而驅動下一輪實作。
+- **反例測試**：
+  - 併發測試（`test_concurrent_submissions_to_same_conversation_only_one_succeeds`）用 `threading` 模擬，而非真正的多 process/多 worker 環境；如果實作用的鎖策略（例如只鎖 AI Message 而非 Conversation 本身）在多 thread 情境下恰好因為 GIL 而巧合通過測試，並不代表在真正多 process 部署下沒有 race condition——這呼應 spec-by-example 文件的 Open Question #1（併發鎖定範圍待與 Dev 確認）。
+  - 失敗機率統計測試（`test_failure_rate_statistics_approximate_configured_probability`）用 2000 次呼叫、容許 0.4~0.6 的區間；統計測試本質上有極低機率因隨機性而 flaky，尚未評估這個容忍區間在 CI 上長期執行的穩定度。
+- **抗壓能力**：三個測試檔案彼此獨立（分別掛在未來 `api`/`conversations`/`ai_providers` app 底下），實作某一個 app 時可以只跑對應測試檔案先取得局部紅燈/綠燈回饋，不需要一次把三個 app 都刻出來才能執行任何測試。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**：
+  - 已完成：`docs/superpowers/specs/2026-07-11-spec-by-example.md`（六大功能區塊 + 6 個 Open Questions），使用者尚未針對內容給出「符合預期」的最終確認，只追問並確認了「查詢我的對話清單」這塊的涵蓋狀況。
+  - 已完成：`conversations/tests/{factories.py,test_tasks.py}`、`ai_providers/tests/test_simulator.py`、`api/tests/{conftest.py,test_submit_message.py}` 五個檔案，皆已改用 `pytest-mock` 的 `mocker` fixture（不再使用 `unittest.mock`），並用 `uv run pytest --collect-only` 驗證為正確原因的紅燈（`ModuleNotFoundError`，非語法錯誤）。
+  - 已完成：`pytest-mock==3.15.1` 已透過 `uv add --group dev` 安裝並寫入 `pyproject.toml`/`uv.lock`。
+  - 已確認：測試目錄佈局維持 inlined（跟 `users/tests/` 一致），不搬到 external `tests/`。
+  - 待處理：使用者要求「更新 handoff.md、排出 commit 狀態描述、完成後 commit，內容主體應該是 example spec」——本次 handoff 更新即為此請求的一部分，commit 尚未執行（將於本次 handoff 更新後接著進行）。
+- **待解決問題**：
+  - RBAC/全文檢索/SSE 三個功能區塊的紅燈測試尚未撰寫。
+  - spec-by-example 文件缺少「查詢我的對話清單」的獨立 Examples 段落，使用者尚未明確要求要不要補上。
+  - `conversations`/`ai_providers`/`api` 三個 Django app 本身（`models.py`、`tasks.py`、`simulator.py`、views/serializers）完全尚未建立，紅燈測試目前只能靠 collection 錯誤驗證「原因正確」，無法真正執行斷言。
+  - 併發測試與統計測試的穩定性（flakiness）未經多次重跑驗證。
+- **下一步指令建議**：接手的 AI 應該先確認使用者是否要繼續補 RBAC/全文檢索/SSE 的紅燈測試，或是否要先把 `conversations`/`ai_providers`/`api` 三個 app 的骨架（models、migrations、`INSTALLED_APPS` 註冊）刻出來讓現有紅燈測試從「import 錯誤」升級成「斷言失敗」，這會是更有意義的下一輪 TDD 綠燈實作起點。若使用者想補齊 spec-by-example 的「查詢我的對話清單」段落，可直接在現有文件追加一個新的功能區塊。務必記得：本專案測試 mocking 一律用 `pytest-mock` 的 `mocker` fixture，不使用標準庫 `unittest.mock`。
