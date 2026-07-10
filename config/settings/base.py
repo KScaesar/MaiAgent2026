@@ -75,6 +75,7 @@ DJANGO_APPS = [
     "django.contrib.staticfiles",
     # "django.contrib.humanize", # Handy template tags
     "django.contrib.admin",
+    "django.contrib.postgres",
     "django.forms",
 ]
 THIRD_PARTY_APPS = [
@@ -93,6 +94,9 @@ THIRD_PARTY_APPS = [
 
 LOCAL_APPS = [
     "maiagent_ai_django.users",
+    "maiagent_ai_django.conversations",
+    "maiagent_ai_django.ai_providers",
+    "maiagent_ai_django.api",
     # Your stuff: custom apps go here
 ]
 # https://docs.djangoproject.com/en/dev/ref/settings/#installed-apps
@@ -342,6 +346,9 @@ REST_FRAMEWORK = {
     ),
     "DEFAULT_PERMISSION_CLASSES": ("rest_framework.permissions.IsAuthenticated",),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_RATES": {
+        "user": "60/min",
+    },
 }
 
 # django-cors-headers - https://github.com/adamchainz/django-cors-headers#setup

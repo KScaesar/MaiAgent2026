@@ -1,4 +1,6 @@
 from django.conf import settings
+from django.urls import include
+from django.urls import path
 from rest_framework.routers import DefaultRouter
 from rest_framework.routers import SimpleRouter
 
@@ -10,4 +12,7 @@ router.register("users", UserViewSet)
 
 
 app_name = "api"
-urlpatterns = router.urls
+urlpatterns = [
+    *router.urls,
+    path("", include("maiagent_ai_django.api.urls")),
+]

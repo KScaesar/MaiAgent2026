@@ -5,6 +5,27 @@ Behold My Awesome Project!
 [![Built with Cookiecutter Django](https://img.shields.io/badge/built%20with-Cookiecutter%20Django-ff69b4.svg?logo=cookiecutter)](https://github.com/cookiecutter/cookiecutter-django/)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 
+## 測試流程
+
+### 沒有本機 Postgres/Redis 時，用 Docker Compose 跑測試
+
+```bash
+# 1. 啟動測試依賴的服務（背景執行）
+docker compose -f docker-compose.local.yml up -d postgres redis
+
+# 2. 套用 migrations（首次或有新 migration 時）
+docker compose -f docker-compose.local.yml run --rm django python manage.py migrate
+
+# 3. 在 django 容器內執行 pytest
+docker compose -f docker-compose.local.yml run --rm django uv run pytest
+```
+
+測試完成後：
+
+- **保留資源**（建議，方便之後繼續測試/開發）：不用做任何事，容器會留在背景執行；下次直接重跑第 3 步即可。
+- **關閉但保留資料**：`docker compose -f docker-compose.local.yml stop`（之後用 `start` 或 `up -d` 復原）。
+- **完全清除**（含資料庫資料）：`docker compose -f docker-compose.local.yml down -v`。
+
 ## Settings
 
 Moved to [settings](https://cookiecutter-django.readthedocs.io/en/latest/1-getting-started/settings.html).
