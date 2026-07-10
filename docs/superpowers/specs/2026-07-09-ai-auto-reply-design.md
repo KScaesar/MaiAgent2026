@@ -4,6 +4,7 @@
 **範圍：** PRD「功能需求 - AI 自動回覆流程」— 非同步生成 AI 回覆的 Celery 任務設計、AI 呼叫抽象層設計
 **不涵蓋：** API endpoint 實作與細節（提交查詢、查詢會話紀錄、更新場景設定 — 屬於「API 與管理介面」需求，將另外討論）、Django Admin 介面
 **依賴：** [對話管理設計文件](2026-07-08-conversation-management-design.md)（`SceneConfig`/`Conversation`/`Message` model 定義）
+**修正紀錄（2026-07-10）：** 本文件假設「一個 Scene 固定對應一個模型」已被 [擴充性（多 AI 模型路由）設計文件](2026-07-10-scalability-model-routing-design.md) 修正——`AIProvider.agenerate` 拿掉 `model` 參數、改用 `litellm.Router` 處理多模型選擇與 failover、Celery 層的 `autoretry` 已取消（改由 Router 的跨模型 fallback 取代）。下方「AI 呼叫抽象層設計」「修正版高階流程」「Celery 任務設計」章節中與此衝突的部分，請以新文件為準；本文件保留供歷史脈絡參考。
 
 ## 背景
 
@@ -37,6 +38,8 @@ liteLLM 的公開 API（`completion`/`acompletion`/`batch_completion`）遵循 O
 
 現階段（本次作業）Celery 任務只使用 `agenerate`；`stream`/`astream`/`batch_generate` 定義在介面中但不強制所有實作都完整支援，供未來串流回覆、批次處理等需求擴充。
 
+> **修正（2026-07-10）：** 上述方法簽名的 `model` 參數已被移除。原因是一個 Scene 可能對應多個候選模型（`ModelRoute`），「該用哪些模型」在建構 provider 時就已由 `litellm.Router` 設定決定，不再是呼叫當下由外部傳入的字串。詳見 [擴充性（多 AI 模型路由）設計文件](2026-07-10-scalability-model-routing-design.md)。
+
 ### `LiteLLMProvider`
 
 直接包裝 `litellm.acompletion(model, messages, timeout=..., **kwargs)`，回傳值即為 liteLLM 原生的 `ModelResponse` 物件（`response.choices[0].message.content`、`response.usage`）。
@@ -53,6 +56,8 @@ liteLLM 的公開 API（`completion`/`acompletion`/`batch_completion`）遵循 O
 ### `factory.get_provider(scene_config)`
 
 依全域設定 `AI_BACKEND`（`litellm` | `simulator`）決定要 instantiate 哪一個實作類別；`model` 等呼叫參數則來自 `SceneConfig.default_settings`（例如 `{"provider": "litellm", "model": "gpt-4o-mini"}`）。`AI_BACKEND` 是環境層級設定（本次作業預設 `simulator`，因無真實 API key），不放在 `SceneConfig` 裡，避免業務設定與後端串接細節混在一起。
+
+> **修正（2026-07-10）：** `factory.get_provider` 改吃 `scene`（而非 `scene_config` 單一設定），從 `scene.model_routes`（`ModelRoute`）組出 `litellm.Router` 的 `model_list`，回傳已綁定路由設定的 provider 實例；`model` 不再是單一字串。詳見 [擴充性（多 AI 模型路由）設計文件](2026-07-10-scalability-model-routing-design.md)。
 
 ## 修正版高階流程
 
@@ -119,6 +124,8 @@ task 開始：SELECT ... FOR UPDATE 鎖定並讀取 AI Message
 - 僅針對 provider 呼叫失敗（逾時、外部 API 錯誤）觸發重試，資料本身錯誤（例如 AI Message 不存在）不重試
 - 最多重試 3 次，exponential backoff + jitter
 - 每次呼叫帶明確 `timeout`（例如 30 秒）
+
+> **修正（2026-07-10）：** 上述 Celery 層重試已取消。改由 `litellm.Router` 內部處理多模型 failover（同層一失敗即換下一個候選，同層試完才跨層），Router 把所有候選模型都試過仍失敗才拋出例外，task 捕捉到即直接判定 `FAILED`，不再對整個流程重跑。理由：疊加整流程重試對系統性故障（如 API 本身掛掉）沒有幫助，只會拉長延遲。詳見 [擴充性（多 AI 模型路由）設計文件](2026-07-10-scalability-model-routing-design.md)。
 
 **併發安全：** 任務開始時在一個 transaction 內對 AI Message row 做 `select_for_update()` 並檢查 `status`，非 `PENDING` 則直接 return。此鎖同時防止「同一任務被重複排程執行」與「多個 worker 同時處理同一筆訊息」的競態。
 
