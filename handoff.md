@@ -594,8 +594,6 @@
     - 全專案套用 `trim trailing whitespace`/`fix end of files`/`django-upgrade`/`ruff --fix`/`ruff format`/`pyproject-fmt`/`djlint-reformat-django` 的自動修復結果（8 個 template 檔、多個 Python 檔案的換行/縮排）。
     - 手動修正 6 處真實 lint 問題：`main.py`（`T201` noqa）、`conversations/apps.py`（`PLC0415` noqa）、`conversations/tasks.py`（`E501` 拆行）、`conversations/tests/test_models.py`（`E501` 拆行）、`realtime/tests/test_consumers.py`（`RET504` 簡化 return）。
     - 驗證：`uv run pre-commit run --all-files` 連續兩次全綠；`docker compose run --rm django python manage.py makemigrations --check` 無變更；`docker compose run --rm -e DJANGO_SETTINGS_MODULE=config.settings.test django pytest -q` 96 個測試全過。
-  - **尚未 git commit / 尚未 push**：目前所有變更都在 working tree（曾一度 `git add -A` 到 staging，但使用者兩次中斷了 `git commit` 呼叫，因此改用 `git status` 確認實際狀態——變更目前是 staged 但未 commit）；使用者明確要求先在此檔案說明清楚，再決定是否要 commit。
-- **待解決問題**：
-  - 尚未實際 push 到遠端、讓 GitHub Actions 真的重跑一次來做最終確認——目前的信心來源是「本機完整重現 CI 兩個 job 的行為」，但沒有 100% 排除 CI runner 環境差異的可能性（見上方風險）。
-  - 尚未決定要不要把這批修正拆成多個小 commit（例如「lint 規則設定」跟「格式化結果」分開），或是要用什麼 commit message。
-- **下一步指令建議**：接手的 AI 應先跟使用者確認（1）commit message 內容與是否分拆多個 commit，（2）是否要直接 push 到 `main` 讓 CI 重新驗證一次，或是走 PR 流程。若使用者同意直接 commit，執行 `git commit`（變更已 `git add -A` 過，只需確認 staging 內容仍是最新）；若要更保守驗證，也可以先開一個分支 push 上去，看 PR 觸發的 CI 是否真的全綠，再合併回 `main`。
+  - **已 commit 並直接 push 到 `main`**（使用者明確表示「不用開分支」）：commit `f6ca727`，push 後 GitHub 自動觸發新的 `CI` workflow run（`29134391253`），用 `gh run watch --exit-status` 確認 `linter`（53s）、`pytest`（49s）兩個 job 皆為 `success`，唯一的 annotation 是 GitHub 平台層級的 `Node.js 20 deprecated` 警告（第三方 action 版本問題，不影響 job 成敗，非本次範疇）。至此本次任務的成功指標已 100% 達成，不再只是本機模擬結果。
+- **待解決問題**：無（本次任務範疇內的 CI 失敗已確認解決）。範疇外的既有技術債仍在（見第 3 節「範疇外事項」：dependabot PR 本身的 CI 狀態未處理）。
+- **下一步指令建議**：本次任務已完全收尾。若後續要處理，可考慮：(1) 检查目前開著的 `dependabot/uv/python-...`、`dependabot/github_actions/...` 這幾個 PR，其 CI 是否也因為這批 lint 修正而一併轉綠（需要 rebase 該分支或等 dependabot 自動更新）；(2) 建議在 repo 設定 branch protection，要求 CI 通過才能合併/push 到 `main`，避免「未跑 pre-commit 就直接 push」的情況再度發生並累積類似技術債。

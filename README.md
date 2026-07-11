@@ -41,6 +41,23 @@ Behold My Awesome Project!
 
 [`handoff.md`](./handoff.md) 是每一輪 AI 協作開發交接時寫下的過程紀錄，依時間序追加，每輪皆說明「做了什麼、為什麼這樣決策、邊界與假設、風險與尚未驗證的部分、下一步建議」。它記錄的是**開發過程本身**（討論脈絡、踩過的坑、待辦事項），不是規格——想知道系統該有什麼行為看上面的 spec，想知道某個實作細節或已知限制從何而來、下一步該做什麼，看 `handoff.md`。
 
+## 可優化項目（測驗時間有限，尚未完成的部分）
+
+受限於一週的作答時間，以下項目已知需要進一步優化，但無法在本次測驗中完整處理。已依此模擬開兩張 Ticket，記錄「需要向同事請求支援」的具體內容：
+
+- **[Issue #4：SSE 本機/正式環境 ASGI 串接與端到端驗證](https://github.com/KScaesar/MaiAgent2026/issues/4)**
+  SSE 即時推送目前只在測試環境用 `ApplicationCommunicator` 驗證過，本機 `docker compose up` 起來的 dev server 仍是 WSGI（`runserver_plus`），尚未真正把 `/sse/...` 端點串起來給瀏覽器使用。需要同事協助決定正式環境 ASGI 部署策略、改造本機 compose 設定，並實機驗證一次完整 SSE 事件流。
+
+- **[Issue #5：中文全文檢索方案選型（search_vector/GIN index 目前形同虛設）](https://github.com/KScaesar/MaiAgent2026/issues/5)**
+  PostgreSQL 內建 `simple` text search config 無法處理中文分詞，`?q=` 全文檢索暫時改用 `icontains` 應急，`search_vector` 欄位與 GIN index 目前沒有被實際查詢用到。需要同事協助評估 `zhparser`/`pg_trgm` 等中文分詞方案在正式環境的可行性，以及資料量成長後的效能影響。
+
+其餘已知但優先度較低、暫未另開 issue 的項目（詳見 `handoff.md` 各輪「待解決問題」段落）：
+
+- `POST /api/conversations/`（建立新對話端點）與 `metadata` 欄位（token 用量等）的實際寫入邏輯尚未實作。
+- `get_provider` 的 `AI_BACKEND` 環境變數切換邏輯、`LiteLLMProvider` 分支、Scene 無啟用 `ModelRoute` 時的 edge case，皆未被任何測試涵蓋。
+- 併發鎖定（`select_for_update()`）目前僅以 `threading` 模擬驗證，未在真正多 process/多 worker 環境下壓測過。
+- Repo 尚未設定 branch protection，要求 CI 通過才能合併/push 到 `main`，避免技術債再度累積。
+
 ## 測試流程
 
 ### 沒有本機 Postgres/Redis 時，用 Docker Compose 跑測試
