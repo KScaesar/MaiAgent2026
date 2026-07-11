@@ -65,7 +65,12 @@ class TestGenerateAiReplyNormalCase:
         mocker,
     ):
         # Given: AI Message status=PENDING，唯一啟用候選模型會成功回應
-        ModelRouteFactory(scene=scene, model_name="gpt-4o-mini", order=0, is_enabled=True)
+        ModelRouteFactory(
+            scene=scene,
+            model_name="gpt-4o-mini",
+            order=0,
+            is_enabled=True,
+        )
         mock_provider = mocker.Mock()
         mock_provider.generate.return_value = _fake_success_response(
             mocker,
@@ -223,7 +228,11 @@ class TestGenerateAiReplyEdgeCase:
         ModelRouteFactory(scene=scene, model_name="model-a", order=0, is_enabled=True)
 
         mock_provider = mocker.Mock()
-        mock_provider.generate.return_value = _fake_success_response(mocker, "model-a", "回覆")
+        mock_provider.generate.return_value = _fake_success_response(
+            mocker,
+            "model-a",
+            "回覆",
+        )
         mocker.patch(
             "maiagent_ai_django.conversations.tasks.get_provider",
             return_value=mock_provider,

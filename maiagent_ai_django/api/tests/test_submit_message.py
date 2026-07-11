@@ -26,7 +26,11 @@ from maiagent_ai_django.conversations.tests.factories import MessageFactory
 pytestmark = pytest.mark.django_db
 
 
-def _submit_message(api_client: APIClient, conversation: Conversation, content: str = "你好"):
+def _submit_message(
+    api_client: APIClient,
+    conversation: Conversation,
+    content: str = "你好",
+):
     return api_client.post(
         f"/api/conversations/{conversation.id}/messages/",
         data={"content": content},
@@ -268,7 +272,9 @@ class TestSubmitMessageEdgeCase:
             response = _submit_message(client, conversation)
             response_status_codes.append(response.status_code)
 
-        threads = [threading.Thread(target=_submit_from_new_connection) for _ in range(2)]
+        threads = [
+            threading.Thread(target=_submit_from_new_connection) for _ in range(2)
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
@@ -277,7 +283,11 @@ class TestSubmitMessageEdgeCase:
         # Then: 恰好一個請求成功（202），另一個因狀態已變為 reply_in_progress 而 409
         expected_success_count = 1
         expected_conflict_count = 1
-        assert response_status_codes.count(status.HTTP_202_ACCEPTED) == expected_success_count, (
-            "併發提交同一對話應恰好只有一個請求成功建立訊息"
+        assert (
+            response_status_codes.count(status.HTTP_202_ACCEPTED)
+            == expected_success_count
+        ), "併發提交同一對話應恰好只有一個請求成功建立訊息"
+        assert (
+            response_status_codes.count(status.HTTP_409_CONFLICT)
+            == expected_conflict_count
         )
-        assert response_status_codes.count(status.HTTP_409_CONFLICT) == expected_conflict_count

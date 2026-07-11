@@ -19,7 +19,7 @@ class MessageInline(admin.TabularInline):
     fields = ("sender_type", "content", "status", "model_used", "created")
     readonly_fields = fields
 
-    def has_add_permission(self, request, obj=None) -> bool:  # noqa: ARG002
+    def has_add_permission(self, request, obj=None) -> bool:
         return False
 
 

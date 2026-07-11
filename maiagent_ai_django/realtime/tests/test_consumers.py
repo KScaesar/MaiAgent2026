@@ -85,8 +85,7 @@ class TestConversationEventsConsumerErrorCase:
 
         async def scenario():
             await second.send_input({"type": "http.request", "body": b""})
-            start = await second.receive_output(timeout=2)
-            return start
+            return await second.receive_output(timeout=2)
 
         start = async_to_sync(scenario)()
 

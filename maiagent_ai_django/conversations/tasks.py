@@ -15,7 +15,10 @@ def push_message_event(
     status: str,
     **extra,
 ) -> None:
-    """透過 Django Channels group_send 推送 Message 層級狀態變化事件給訂閱中的 SSE 連線。"""
+    """透過 Django Channels group_send 推送 Message 層級狀態變化事件。
+
+    給訂閱中的 SSE 連線。
+    """
     channel_layer = get_channel_layer()
     if channel_layer is None:
         return

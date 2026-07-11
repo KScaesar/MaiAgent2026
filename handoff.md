@@ -529,3 +529,73 @@
   - `?q=` 全文檢索用 `icontains` 屬於暫時性折衷，`search_vector`/GIN index 目前沒有被實際查詢用到；若未來要處理大量資料或中文分詞，需要重新評估（例如導入 `zhparser` 或改用 trigram 索引）。
   - `POST /api/conversations/` 建立對話端點、`metadata` 欄位的實際寫入邏輯（token 用量等）均未實作。
 - **下一步指令建議**：接手的 AI 應該先跟使用者確認是否要 commit 這批變更；若要讓 SSE 真的能在瀏覽器（`EventSource`）測試，下一步是調整 `compose/local/django/start`（或新增一個 daphne 專用 service）讓 ASGI 路由真正生效，並實際用瀏覽器或 `curl -N` 驗證一次 SSE 事件流。
+
+---
+
+# AI Context Handoff: 修復 GitHub Actions CI（pre-commit lint 債務）
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：使用者要求用 `gh` 查看 GitHub Actions 狀態、找出並解決造成失敗的 issue。用 `gh run list` 查到 `main` 分支最近數次 push 觸發的 `CI` workflow 全部失敗（`linter` job 失敗，`pytest` job 本身是綠的）。
+- **成功指標**：本機執行 `uv run pre-commit run --all-files` 全部 hook 通過（對應 CI 的 `linter` job），且 `pytest` 在真實 Postgres/Redis 環境下全數通過、`makemigrations --check` 無變更（對應 CI 的 `pytest` job）。
+- **邏輯流**：
+  1. `gh run list` → 找到最新失敗的 run（`29118690850`，`main` push 觸發）。
+  2. `gh run view <id>` / `gh api .../jobs/<id>/logs` 撈出 `linter` job 完整 log，發現不只 djlint 格式問題，而是一整串 hook 都失敗（trailing whitespace、fix end of files、django-upgrade、ruff check、ruff format、pyproject-fmt、djLint），代表這是先前幾個 commit 從未真正跑過 `pre-commit` 就直接 push 上去累積的技術債。
+  3. 反覆執行 `uv run pre-commit run --all-files` 讓可自動修復的 hook（whitespace/EOF/django-upgrade/ruff --fix/ruff format/pyproject-fmt/djlint-reformat）先收斂到穩定狀態（跑兩次結果一致，代表不會再互相翻修）。
+  4. 針對 `ruff check` 剩下的 319 個手動需要決策的錯誤，用 `--statistics` 分類，逐類判斷是「規則設定問題」還是「真的要改程式碼」。
+  5. 修完後用 `docker compose -f docker-compose.local.yml run --rm django ...` 重新驗證 migrations 與全部 96 個 pytest 測試，確保沒有引入 regression。
+- **輸入**：`gh` CLI 撈到的 CI 失敗 log、本機 `uv run pre-commit`/`ruff`/`pytest` 執行結果、既有 `docker-compose.local.yml` 本機開發環境（postgres/redis/mailpit/django 四個容器）。
+- **輸出**：29 個檔案的格式化/lint 修正（見下方「目前狀態」清單）、`pyproject.toml` 新增 3 條 ruff 設定（見下方決策背景）；**尚未 commit**（使用者要求先確認 CI 真的會過、並在 `handoff.md` 記錄後才決定是否 commit）。
+
+## 2. 決策背景 (Why)
+
+- **`ruff` 新增全域 ignore：`ERA001`、`RUF001`、`RUF002`、`RUF003`**：
+  - 統計後發現 319 個錯誤裡 158 個 `RUF002`（docstring 全形標點）+ 104 個 `RUF003`（註解全形標點）+ 1 個 `RUF001`（字串全形標點）+ 28 個 `ERA001`（疑似註解掉的程式碼），加總佔了 291/319（約 91%）。
+  - 逐一抽查 `ERA001` 的 28 筆全部是 `# Given: ...`/`# When: ...`/`# Then: ...` 這種中文 BDD 風格註解被 ruff 的啟發式規則誤判為「被註解掉的程式碼」（用 grep 排除掉含中文字元的行後結果為零筆，代表沒有一筆是真正的死碼）。
+  - `RUF001-003` 則是整個專案（包含 `tasks.py`、`tickets.py` 等應用程式碼）大量使用繁體中文全形逗號/頓號/分號撰寫 docstring 與 spec-by-example 風格的中文註解，這是團隊既定的撰寫慣例（CLAUDE.md 本身也是全中文），不是筆誤。
+  - 因此判斷這 4 條規則對這個中文為主的 codebase 是系統性誤判而非真的品質問題，選擇全域 ignore 而非逐一加 `# noqa`（後者要改 291 處，且未來新寫的中文註解還是會一直觸發，維護成本過高）。
+- **新增 `lint.per-file-ignores."*/tests/*"`：`PLR0913`、`PLR2004`**：
+  - `PLR2004`（22 筆）全部出現在測試檔案，都是 `assert response.status_code == 200` 這類斷言字面值，這是 pytest 慣例寫法，不是「魔術數字」壞味道。
+  - `PLR0913` 出現在一個測試函式（`test_submit_message.py` 的 parametrize 測試），pytest fixture 注入常態性超過 5 個參數，屬於測試框架的正常模式。
+  - 只對 `tests/` 目錄放寬，應用程式碼本身仍維持嚴格檢查，避免這兩條規則的保護範圍被稀釋。
+- **手動修正而非加規則例外的個案**（真的是可以改善或需要處理的程式碼）：
+  - `main.py` 的 `print()` 加 `# noqa: T201`：這是 `uv init` 產生的 demo 腳本，非套件實際邏輯，保留 print 展示但明確標註忽略。
+  - `conversations/apps.py` 的 `ready()` 內 local import 加 `# noqa: PLC0415`：Django `AppConfig.ready()` 內 import signals 是官方建議寫法（避免 app registry 尚未就緒），規則本身跟 Django 慣例衝突，不是程式問題。
+  - `conversations/tasks.py`、`conversations/tests/test_models.py` 的過長中文 docstring/註解行（`E501`）：直接把單行拆成兩行，不加 noqa，因為純粹是排版問題。
+  - `realtime/tests/test_consumers.py` 的 `RET504`：`start = await ...; return start` 改成直接 `return await ...`，是真的可以簡化的多餘賦值。
+  - `ai_providers/tests/test_simulator.py` 的 `# noqa: BLE001, PERF203`：`ruff --fix` 自動移除了其中已經不再觸發的 `PERF203`（`RUF100` 判定該 noqa 已無用），保留還在用的 `BLE001`。
+- **驗證方式選擇 `docker compose run` 而非 `docker compose exec`**：使用者過程中提出質疑，糾正了原本用 `docker exec` 手動帶入 `POSTGRES_*`/`DATABASE_URL` 環境變數字串的做法。改用專案既有的 `docker compose -f docker-compose.local.yml run --rm django ...`，理由是 `run` 會走 `compose/production/django/entrypoint`（負責把 `POSTGRES_*` 組成 `DATABASE_URL` 並 `wait-for-it`），而 `exec` 是直接進入已在跑的容器、繞過 entrypoint，兩者行為不等價；用專案既有機制驗證比手動拼接連線字串更貼近 CI 實際執行環境、也不會因為手滑帶錯密碼/host 造成誤判。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：
+  - 沒有處理 CI log 裡另外出現的 `dependabot` PR（`dependabot/uv/python-...`、`dependabot/github_actions/...`）本身的失敗；這次只鎖定 `main` 分支 `push` 觸發的 `CI` workflow。
+  - 沒有改動任何應用邏輯/API 行為，全部改動都是格式化或 lint 規則層級（已逐一 review diff 確認）。
+  - 沒有處理 `Node.js 20 deprecated` 這類 GitHub Actions 平台警告（annotation 裡出現，但不影響 job 成敗，且屬於第三方 action 版本問題，非本次 CI 失敗主因）。
+- **基礎假設**：
+  - 假設 CI 的 `linter` job（`pre-commit/action@v3.0.1`）跟本機 `uv run pre-commit run --all-files` 行為一致（同一份 `.pre-commit-config.yaml`、同一批 hook 版本）；沒有實際推一個分支上去跑一次 CI 來做最終確認（因為使用者尚未同意 commit/push）。
+  - 假設本機 docker 容器內的 `uv.lock`/套件版本與 CI 用 `uv sync --locked` 裝出來的環境等價（本機容器是先前已建置好的 image，非本次重新 build）。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：若 CI runner 上的 pre-commit hook 版本快取（`pre-commit/action` 有自己的 cache key）跟本機 `~/.cache/pre-commit` 的版本不同步，理論上可能出現本機過但 CI 版本不同而有落差；但 `.pre-commit-config.yaml` 都釘死了明確版本號（如 `django-upgrade rev: '1.31.1'`），風險低。
+- **反例測試**：
+  - 過程中一度誤判：`config/settings/base.py` 的 `DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"` 被 `django-upgrade` 自動刪除，第一時間以為是誤刪危險設定並手動加回去；後來讀了 `django_upgrade/fixers/default_auto_field.py` 原始碼，確認這是 Django 6.0 官方行為變更（[release notes](https://docs.djangoproject.com/en/6.0/releases/6.0/#default-auto-field-setting-now-defaults-to-bigautofield) 明確說 6.0 起預設值本身就是 `BigAutoField`），而此專案 `pyproject.toml` 釘的正是 `django==6.0.6`，所以刪除是正確、安全的，已把手動加回去的部分撤銷。
+  - `uv run pre-commit run --all-files` 連續執行兩次確認到達不動點（第二次全部 `Passed`，沒有任何 hook 再回報 `files were modified`），排除「自動修復互相打架、永遠不收斂」的可能。
+  - 用 `docker compose run --rm django python manage.py makemigrations --check` 確認 lint 修正沒有意外碰到 model 定義，migration 歷史與程式碼一致。
+  - 全部 96 個 pytest 測試在真實 Postgres 16 + Redis 容器組合下執行，非 mock DB，通過且無 flaky。
+- **抗壓能力**：這次修正主要是「一次性清債」，`pyproject.toml` 新增的 ignore 規則屬於長期性設定（往後中文註解/BDD 風格不會再被誤判），但沒有在 CI 或 pre-commit 設定裡加任何機制防止「有人再次不跑 pre-commit 就 push」的情況重演——這仍是流程面的風險，需要團隊自律或另外加 branch protection 規則。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**：
+  - 已完成（本機驗證）：
+    - `pyproject.toml`：新增 `lint.ignore` 的 `ERA001`/`RUF001`/`RUF002`/`RUF003`，新增 `lint.per-file-ignores."*/tests/*"` 的 `PLR0913`/`PLR2004`（`pyproject-fmt` 自動把 `lint.isort.force-single-line` 排到後面，屬預期內的自動排序）。
+    - 全專案套用 `trim trailing whitespace`/`fix end of files`/`django-upgrade`/`ruff --fix`/`ruff format`/`pyproject-fmt`/`djlint-reformat-django` 的自動修復結果（8 個 template 檔、多個 Python 檔案的換行/縮排）。
+    - 手動修正 6 處真實 lint 問題：`main.py`（`T201` noqa）、`conversations/apps.py`（`PLC0415` noqa）、`conversations/tasks.py`（`E501` 拆行）、`conversations/tests/test_models.py`（`E501` 拆行）、`realtime/tests/test_consumers.py`（`RET504` 簡化 return）。
+    - 驗證：`uv run pre-commit run --all-files` 連續兩次全綠；`docker compose run --rm django python manage.py makemigrations --check` 無變更；`docker compose run --rm -e DJANGO_SETTINGS_MODULE=config.settings.test django pytest -q` 96 個測試全過。
+  - **尚未 git commit / 尚未 push**：目前所有變更都在 working tree（曾一度 `git add -A` 到 staging，但使用者兩次中斷了 `git commit` 呼叫，因此改用 `git status` 確認實際狀態——變更目前是 staged 但未 commit）；使用者明確要求先在此檔案說明清楚，再決定是否要 commit。
+- **待解決問題**：
+  - 尚未實際 push 到遠端、讓 GitHub Actions 真的重跑一次來做最終確認——目前的信心來源是「本機完整重現 CI 兩個 job 的行為」，但沒有 100% 排除 CI runner 環境差異的可能性（見上方風險）。
+  - 尚未決定要不要把這批修正拆成多個小 commit（例如「lint 規則設定」跟「格式化結果」分開），或是要用什麼 commit message。
+- **下一步指令建議**：接手的 AI 應先跟使用者確認（1）commit message 內容與是否分拆多個 commit，（2）是否要直接 push 到 `main` 讓 CI 重新驗證一次，或是走 PR 流程。若使用者同意直接 commit，執行 `git commit`（變更已 `git add -A` 過，只需確認 staging 內容仍是最新）；若要更保守驗證，也可以先開一個分支 push 上去，看 PR 觸發的 CI 是否真的全綠，再合併回 `main`。

@@ -51,7 +51,9 @@ class TestDelayedFailureSimulatorNormalCase:
         )
 
         # When: 呼叫 generate()
-        actual_response = simulator.generate(messages=[{"role": "user", "content": "hi"}])
+        actual_response = simulator.generate(
+            messages=[{"role": "user", "content": "hi"}],
+        )
 
         # Then: 回傳值就是 router.completion() 的回傳值
         assert actual_response is fake_response
@@ -142,7 +144,7 @@ class TestDelayedFailureSimulatorErrorCase:
         for _ in range(attempts):
             try:
                 simulator.generate(messages=[{"role": "user", "content": "hi"}])
-            except Exception:  # noqa: BLE001, PERF203
+            except Exception:  # noqa: BLE001
                 failures += 1
 
         # Then: 失敗比例應接近設定機率（容許統計誤差）

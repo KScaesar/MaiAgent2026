@@ -49,7 +49,8 @@ class ConversationMessagesView(APIView):
             or is_admin(user)
             or (
                 is_customer_service(user)
-                and conversation.scene.scene_type == SceneConfig.SceneType.CUSTOMER_SERVICE
+                and conversation.scene.scene_type
+                == SceneConfig.SceneType.CUSTOMER_SERVICE
             )
         )
         if not allowed:
@@ -180,14 +181,18 @@ class ConversationDetailView(RetrieveAPIView):
     lookup_url_kwarg = "conversation_id"
 
     def get_object(self):
-        conversation = get_object_or_404(Conversation, id=self.kwargs["conversation_id"])
+        conversation = get_object_or_404(
+            Conversation,
+            id=self.kwargs["conversation_id"],
+        )
         user = self.request.user
         allowed = (
             conversation.user_id == user.id
             or is_admin(user)
             or (
                 is_customer_service(user)
-                and conversation.scene.scene_type == SceneConfig.SceneType.CUSTOMER_SERVICE
+                and conversation.scene.scene_type
+                == SceneConfig.SceneType.CUSTOMER_SERVICE
             )
         )
         if not allowed:
@@ -248,7 +253,8 @@ class MessageDetailView(RetrieveAPIView):
             or is_admin(user)
             or (
                 is_customer_service(user)
-                and conversation.scene.scene_type == SceneConfig.SceneType.CUSTOMER_SERVICE
+                and conversation.scene.scene_type
+                == SceneConfig.SceneType.CUSTOMER_SERVICE
             )
         )
         if not allowed:
@@ -269,7 +275,8 @@ class SSETicketView(APIView):
             or is_admin(user)
             or (
                 is_customer_service(user)
-                and conversation.scene.scene_type == SceneConfig.SceneType.CUSTOMER_SERVICE
+                and conversation.scene.scene_type
+                == SceneConfig.SceneType.CUSTOMER_SERVICE
             )
         )
         if not allowed:

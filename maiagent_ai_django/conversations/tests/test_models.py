@@ -14,7 +14,6 @@ import pytest
 from maiagent_ai_django.conversations.models import Conversation
 from maiagent_ai_django.conversations.models import Message
 from maiagent_ai_django.conversations.models import ModelRoute
-from maiagent_ai_django.conversations.models import SceneConfig
 from maiagent_ai_django.conversations.tests.factories import ConversationFactory
 from maiagent_ai_django.conversations.tests.factories import MessageFactory
 from maiagent_ai_django.conversations.tests.factories import ModelRouteFactory
@@ -97,7 +96,8 @@ class TestMessageNormalCase:
     """[4] Happy Path：預設狀態與排序。"""
 
     def test_default_status_is_pending(self):
-        # Given / When: 建立一個未指定 status 的 Message（factory 覆寫為 COMPLETED，直接用 model 驗證預設值）
+        # Given / When: 建立一個未指定 status 的 Message
+        # （factory 覆寫為 COMPLETED，直接用 model 驗證預設值）
         message = Message(sender_type=Message.SenderType.USER, content="hi")
 
         # Then: model 欄位預設值為 PENDING
@@ -112,7 +112,10 @@ class TestMessageNormalCase:
 
         # When: 用預設 Manager 取出全部
         actual_ids = list(
-            Message.objects.filter(conversation=conversation).values_list("id", flat=True),
+            Message.objects.filter(conversation=conversation).values_list(
+                "id",
+                flat=True,
+            ),
         )
 
         # Then: 依 created 由舊到新排序（id 為 tie-breaker）

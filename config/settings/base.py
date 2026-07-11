@@ -1,4 +1,4 @@
-# ruff: noqa: ERA001, E501
+# ruff: noqa: E501
 """Base settings to build other settings files upon."""
 
 import ssl
@@ -55,7 +55,6 @@ DATABASES = {
 }
 DATABASES["default"]["ATOMIC_REQUESTS"] = True
 # https://docs.djangoproject.com/en/stable/ref/settings/#std:setting-DEFAULT_AUTO_FIELD
-DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 
 # URLS
 # ------------------------------------------------------------------------------

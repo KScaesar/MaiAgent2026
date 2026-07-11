@@ -78,7 +78,9 @@ class ConversationEventsConsumer(AsyncHttpConsumer):
         ticket_payload = (
             await database_sync_to_async(consume_ticket)(ticket) if ticket else None
         )
-        if not ticket_payload or ticket_payload.get("conversation_id") != str(conversation_id):
+        if not ticket_payload or ticket_payload.get("conversation_id") != str(
+            conversation_id,
+        ):
             await self.send_response(
                 403,
                 b"invalid or expired ticket",

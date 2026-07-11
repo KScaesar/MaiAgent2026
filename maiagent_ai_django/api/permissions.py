@@ -15,4 +15,6 @@ class IsAdmin(BasePermission):
     """僅管理者（is_superuser 或 admin Group）可通過。"""
 
     def has_permission(self, request, view) -> bool:
-        return bool(request.user and request.user.is_authenticated and is_admin(request.user))
+        return bool(
+            request.user and request.user.is_authenticated and is_admin(request.user),
+        )

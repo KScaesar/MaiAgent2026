@@ -26,7 +26,10 @@ def _build_model_list(scene: SceneConfig) -> list[dict]:
             "order": route.order,
             "weight": route.weight,
         }
-        for route in scene.model_routes.filter(is_enabled=True).order_by("order", "model_name")
+        for route in scene.model_routes.filter(is_enabled=True).order_by(
+            "order",
+            "model_name",
+        )
     ]
 
 

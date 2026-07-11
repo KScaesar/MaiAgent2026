@@ -94,7 +94,9 @@ class TestConversationAdminEdgeCase:
         request.user = cs_user
 
         # When: 取得 ConversationAdmin 對客服人員顯示的唯讀欄位
-        readonly_fields = ConversationAdmin(Conversation, None).get_readonly_fields(request)
+        readonly_fields = ConversationAdmin(Conversation, None).get_readonly_fields(
+            request,
+        )
 
         # Then: user/scene 唯讀，但 status 不在唯讀清單內（可編輯）
         assert "user" in readonly_fields
@@ -108,7 +110,9 @@ class TestConversationAdminEdgeCase:
         request.user = admin_user
 
         # When: 取得 ConversationAdmin 對管理者顯示的唯讀欄位
-        readonly_fields = ConversationAdmin(Conversation, None).get_readonly_fields(request)
+        readonly_fields = ConversationAdmin(Conversation, None).get_readonly_fields(
+            request,
+        )
 
         # Then: 管理者可自由調整 user/scene/status，皆不在唯讀清單內
         assert "user" not in readonly_fields

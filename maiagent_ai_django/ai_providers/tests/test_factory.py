@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import pytest
 
-from maiagent_ai_django.ai_providers.factory import get_provider
 from maiagent_ai_django.ai_providers.factory import _build_model_list
+from maiagent_ai_django.ai_providers.factory import get_provider
 from maiagent_ai_django.ai_providers.litellm_provider import LiteLLMProvider
 from maiagent_ai_django.ai_providers.simulator import DelayedFailureSimulator
 from maiagent_ai_django.conversations.tests.factories import ModelRouteFactory
@@ -27,8 +27,20 @@ class TestBuildModelListNormalCase:
     def test_enabled_routes_are_mapped_with_order_and_weight(self):
         # Given: 一個 Scene 有兩層候選（order 0 / order 1），皆啟用
         scene = SceneConfigFactory()
-        ModelRouteFactory(scene=scene, model_name="model-a", order=0, weight=2, is_enabled=True)
-        ModelRouteFactory(scene=scene, model_name="model-b", order=1, weight=1, is_enabled=True)
+        ModelRouteFactory(
+            scene=scene,
+            model_name="model-a",
+            order=0,
+            weight=2,
+            is_enabled=True,
+        )
+        ModelRouteFactory(
+            scene=scene,
+            model_name="model-b",
+            order=1,
+            weight=1,
+            is_enabled=True,
+        )
 
         # When: 組出 model_list
         model_list = _build_model_list(scene)

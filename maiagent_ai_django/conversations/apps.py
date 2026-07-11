@@ -8,4 +8,4 @@ class ConversationsConfig(AppConfig):
     verbose_name = _("Conversations")
 
     def ready(self) -> None:
-        from maiagent_ai_django.conversations import signals  # noqa: F401
+        from maiagent_ai_django.conversations import signals  # noqa: F401, PLC0415
