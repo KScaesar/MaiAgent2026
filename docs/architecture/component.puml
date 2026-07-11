@@ -1,0 +1,73 @@
+@startuml component
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Component.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title MaiAgent AI Django — Component Diagram (C4 Level 3, Django App 內部)
+
+Container_Boundary(webapp, "Django App") {
+
+    Boundary(apiPkg, "api") {
+        Component(apiViews, "views", "DRF APIView", "Conversation/Message/Scene 端點\n角色權限判斷")
+        Component(apiPerm, "permissions", "DRF Permission", "IsAdmin、is_admin()\nis_customer_service()")
+        Component(apiSerializers, "serializers", "DRF Serializer", "請求/回應轉換\nPublic/Admin 欄位分離")
+    }
+
+    Boundary(convPkg, "conversations") {
+        Component(convSignals, "signals", "Django Signal", "維護 search_vector\n供全文檢索")
+        Component(convModels, "models", "Django ORM", "Conversation/Message\nSceneConfig/ModelRoute\n狀態機、軟刪除 Manager")
+        Component(convTasks, "tasks", "Celery Task", "generate_ai_reply：\n呼叫 provider、更新狀態\n失敗轉人工、廣播事件")
+    }
+
+    Boundary(providerPkg, "ai_providers") {
+        Component(providerFactory, "factory", "Factory", "依 model_routes 組出\nlitellm.Router\n依 AI_BACKEND 切換實作")
+        Component(providerLiteLLM, "litellm_provider", "Provider", "呼叫真實\nlitellm.Router")
+        Component(providerSimulator, "simulator", "Provider", "DelayedFailureSimulator\n本機/測試延遲失敗模擬")
+    }
+
+    Boundary(rtPkg, "realtime") {
+        Component(rtRouting, "routing", "ASGI URL Routing", "http_urlpatterns\n掛載 SSE consumer")
+        Component(rtConsumer, "consumers", "AsyncHttpConsumer", "/sse/conversations/{id}/\nticket 驗證、快照、事件轉發")
+        Component(rtTickets, "tickets", "Ticket Store", "issue_ticket/consume_ticket\nRedis 一次性短期授權")
+    }
+}
+
+Rel(apiViews, apiPerm, "檢查角色權限")
+Rel(apiViews, apiSerializers, "序列化輸入/輸出")
+Rel(apiViews, convModels, "讀寫對話/訊息/場景")
+Rel(apiViews, rtTickets, "簽發 SSE ticket")
+Rel(apiViews, convTasks, "派送 .delay()")
+
+Rel(convTasks, convModels, "更新 Message 狀態與內容")
+Rel(convTasks, providerFactory, "取得對應 Scene 的 provider")
+Rel(convTasks, rtConsumer, "group_send 廣播狀態變化", "channel layer")
+
+Rel(providerFactory, providerLiteLLM, "AI_BACKEND=litellm 時建立")
+Rel(providerFactory, providerSimulator, "預設(本機/測試)建立")
+
+Rel(convModels, convSignals, "save() 觸發")
+
+Rel(rtRouting, rtConsumer, "路由請求")
+Rel(rtConsumer, rtTickets, "驗證 ticket")
+Rel(rtConsumer, convModels, "查詢初始訊息快照")
+
+' 版面提示：api 在最上層；conversations 置中；realtime / ai_providers 並排在最下層(realtime 左、ai_providers 右)。
+' conversations 內部讓 models 貼左(面向 realtime)、tasks 貼右(面向 ai_providers)，
+' 兩條對外邊各自往同一側直線延伸，才不會在中間交叉成 X。
+' convTasks<->rtConsumer<->convModels 的雙向依賴都共用 rtConsumer 這個節點，兩條邊會在 rtConsumer 匯聚而非彼此交叉；
+' views 對外的多條邊也都共用 apiViews 同一起點，同理不會自我交叉。
+Lay_D(apiPkg, convPkg)
+Lay_D(convPkg, rtPkg)
+Lay_R(rtPkg, providerPkg)
+
+Lay_R(apiViews, apiPerm)
+Lay_R(apiPerm, apiSerializers)
+Lay_U(convModels, convSignals)
+Lay_R(convModels, convTasks)
+Lay_R(providerFactory, providerLiteLLM)
+Lay_R(providerLiteLLM, providerSimulator)
+Lay_D(rtRouting, rtConsumer)
+Lay_D(rtConsumer, rtTickets)
+
+@enduml

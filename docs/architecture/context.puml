@@ -1,0 +1,29 @@
+@startuml context
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Context.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+SHOW_PERSON_OUTLINE()
+
+title MaiAgent AI Django — System Context (C4 Level 1)
+
+Person(customer, "一般使用者", "提交查詢、查看對話與 AI 回覆")
+Person(cs, "客服人員", "查看/接手客服場景\n(customer_service)下的對話")
+Person(admin, "管理者", "管理 Scene / ModelRoute 設定\n擁有全部資料存取權")
+
+System(maiagent, "MaiAgent AI Django", "對話管理、AI 自動回覆\n即時推送、RBAC、全文檢索")
+
+System_Ext(aiProvider, "AI Model Providers", "透過 litellm.Router 呼叫的\n外部 LLM 供應商(可切換/容錯)")
+
+Rel(customer, maiagent, "提交訊息、查詢對話狀態", "HTTPS/REST + SSE")
+Rel(cs, maiagent, "查看客服場景對話", "HTTPS/REST + SSE")
+Rel(admin, maiagent, "管理 Scene/ModelRoute", "HTTPS/REST + Admin")
+Rel(maiagent, aiProvider, "產生 AI 回覆內容", "litellm Router (HTTPS)")
+
+' 讓三個 Person 排成一列在最上方，System 置中在下，避免箭頭交錯
+Lay_Distance(customer, cs, 1)
+Lay_Distance(cs, admin, 1)
+Lay_D(cs, maiagent)
+Lay_D(maiagent, aiProvider)
+
+@enduml

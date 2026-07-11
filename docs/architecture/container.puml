@@ -1,0 +1,41 @@
+@startuml container
+!include https://raw.githubusercontent.com/plantuml-stdlib/C4-PlantUML/master/C4_Container.puml
+
+LAYOUT_TOP_DOWN()
+LAYOUT_WITH_LEGEND()
+
+title MaiAgent AI Django — Container Diagram (C4 Level 2)
+
+Person(user, "使用者\n(一般 / 客服 / 管理者)", "依角色擁有不同資料存取範圍(RBAC)")
+
+System_Boundary(maiagent, "MaiAgent AI Django") {
+    Container(web, "Django API", "Django + DRF (WSGI)", "REST API：提交查詢/查詢對話/場景管理\n處理 RBAC 與狀態機驗證")
+    Container(asgi, "Realtime Consumer", "Django Channels (ASGI)", "/sse/conversations/{id}/\n推送 AI 回覆狀態變化")
+    Container(worker, "Celery Worker", "Celery", "非同步產生 AI 回覆\n(generate_ai_reply)，含重試/轉人工")
+    ContainerDb(redis, "Redis", "In-memory store", "身兼 Celery broker\nChannels layer、SSE 一次性 ticket 儲存")
+    ContainerDb(db, "PostgreSQL", "RDBMS", "Conversation / Message\nSceneConfig / ModelRoute\n含全文檢索欄位與 GIN index")
+}
+
+System_Ext(aiProvider, "AI Model Providers", "litellm.Router 選模與容錯\n(或本機 DelayedFailureSimulator)")
+
+Rel(user, web, "提交訊息 / 查詢對話與場景", "HTTPS/REST")
+Rel(user, asgi, "訂閱單一對話的即時事件\n(需先取得 ticket)", "HTTPS/SSE")
+
+Rel(web, db, "讀寫\n(含 select_for_update 狀態鎖定)", "ORM")
+Rel(web, redis, "簽發 SSE ticket\n派送 Celery 任務", "redis-py")
+Rel(worker, db, "更新 Message 狀態/內容", "ORM")
+Rel(worker, redis, "取任務、廣播事件", "Celery / channels_redis")
+Rel(worker, aiProvider, "請求 AI 回覆", "litellm Router")
+Rel(asgi, redis, "group_send 事件轉發\n給訂閱中的連線", "channels_redis")
+Rel(asgi, db, "驗證 ticket、查詢初始快照", "ORM (async-safe)")
+
+' 版面提示：web / worker / asgi 排成一列(worker 置中)，redis / db 疊在 worker 正下方，
+' 讓「三個來源都連到兩個共用中樞(redis, db)」形成梳狀(comb)佈局而非交叉的 X，避免箭頭交錯。
+Lay_D(user, web)
+Lay_R(web, worker)
+Lay_R(worker, asgi)
+Lay_D(worker, redis)
+Lay_D(redis, db)
+Lay_D(db, aiProvider)
+
+@enduml

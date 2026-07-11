@@ -1,0 +1,51 @@
+@startuml dynamic
+title MaiAgent AI Django — 提交訊息 → AI 回覆 → SSE 推播 (補充圖 Dynamic Diagram)
+
+skinparam sequenceMessageAlign center
+skinparam maxMessageSize 160
+skinparam BoxPadding 10
+
+actor "使用者瀏覽器" as Client
+participant "Django API\n(web)" as API
+database "PostgreSQL" as DB
+queue "Redis\n(broker / channel layer / ticket)" as Redis
+participant "Celery Worker" as Worker
+participant "Realtime Consumer\n(ASGI)" as SSE
+participant "AI Model Provider" as LLM
+
+== 建立 SSE 連線 ==
+Client -> API : GET /conversations/{id}/sse-ticket/
+API -> Redis : issue_ticket(conversation_id)
+Redis --> API : ticket
+API --> Client : { ticket }
+
+Client -> SSE : GET /sse/conversations/{id}/?ticket=...
+SSE -> Redis : consume_ticket(ticket)
+SSE -> DB : 查詢初始訊息快照
+SSE --> Client : text/event-stream(初始快照)
+
+== 提交訊息 ==
+Client -> API : POST /conversations/{id}/messages/\n{ content }
+API -> DB : select_for_update 檢查狀態機\n(closed / pending_human / reply_in_progress)
+API -> DB : 建立 user message(completed)\n+ ai message(pending)
+API -> Worker : generate_ai_reply.delay(ai_message_id)
+API --> Client : 202 Accepted\n{ user_message_id, ai_message_id }
+
+== 非同步產生 AI 回覆 ==
+Worker -> DB : 讀取 Scene / ModelRoute 設定
+Worker -> LLM : 透過 litellm.Router 請求回覆\n(依 order/weight 選模，可容錯重試)
+
+alt 成功
+    LLM --> Worker : 回覆內容
+    Worker -> DB : 更新 ai message = completed\n(content, model_used)
+else 失敗且重試耗盡
+    LLM --> Worker : 失敗
+    Worker -> DB : 更新 ai message = failed(error_message)
+    Worker -> DB : Conversation.status = pending_human
+end
+
+Worker -> Redis : channel_layer.group_send\n(conv_{id}, 狀態變化事件)
+Redis -> SSE : group_send 轉發
+SSE --> Client : text/event-stream(狀態變化事件)
+
+@enduml

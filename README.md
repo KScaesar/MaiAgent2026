@@ -41,6 +41,31 @@ Behold My Awesome Project!
 
 [`handoff.md`](./handoff.md) 是每一輪 AI 協作開發交接時寫下的過程紀錄，依時間序追加，每輪皆說明「做了什麼、為什麼這樣決策、邊界與假設、風險與尚未驗證的部分、下一步建議」。它記錄的是**開發過程本身**（討論脈絡、踩過的坑、待辦事項），不是規格——想知道系統該有什麼行為看上面的 spec，想知道某個實作細節或已知限制從何而來、下一步該做什麼，看 `handoff.md`。
 
+## 系統架構圖（C4 Model）
+
+以下用 [C4 Model](https://c4model.com/) 呈現系統架構，用 [C4-PlantUML](https://github.com/plantuml-stdlib/C4-PlantUML) 撰寫，原始碼在 [`docs/architecture/`](./docs/architecture/)（`.puml`），並附上已渲染好的 `.svg` 直接嵌入此頁。
+
+- Level 1｜System Context
+  - 原始碼：[context.puml](./docs/architecture/context.puml)
+  - 圖片：[context.svg](./docs/architecture/context.svg)
+- Level 2｜Container
+  - 原始碼：[container.puml](./docs/architecture/container.puml)
+  - 圖片：[container.svg](./docs/architecture/container.svg)
+- Level 3｜Component（Django App 內部）
+  - 原始碼：[component.puml](./docs/architecture/component.puml)
+  - 圖片：[component.svg](./docs/architecture/component.svg)
+- 補充圖｜Dynamic Diagram：提交訊息 → AI 回覆 → SSE 推播
+  - 原始碼：[dynamic.puml](./docs/architecture/dynamic.puml)
+  - 圖片：[dynamic.svg](./docs/architecture/dynamic.svg)
+
+### Level 2｜Container
+
+![Container](./docs/architecture/container.svg)
+
+### Level 3｜Component（Django App 內部）
+
+![Component](./docs/architecture/component.svg)
+
 ## 可優化項目（測驗時間有限，尚未完成的部分）
 
 受限於一週的作答時間，以下項目已知需要進一步優化，但無法在本次測驗中完整處理。已依此模擬開兩張 Ticket，記錄「需要向同事請求支援」的具體內容：
