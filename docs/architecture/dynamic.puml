@@ -13,6 +13,11 @@ participant "Celery Worker" as Worker
 participant "Realtime Consumer\n(ASGI)" as SSE
 participant "AI Model Provider" as LLM
 
+== 建立對話 ==
+Client -> API : POST /conversations/\n{ scene }
+API -> DB : 建立 Conversation(status=open)
+API --> Client : 201 Created\n{ conversation_id }
+
 == 建立 SSE 連線 ==
 Client -> API : GET /conversations/{id}/sse-ticket/
 API -> Redis : issue_ticket(conversation_id)

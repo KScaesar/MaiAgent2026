@@ -348,6 +348,62 @@ Scenario: 失敗事件推送不包含內部分派旗標
 
 ---
 
+## 功能七：建立新對話
+
+```
+功能：建立新對話（POST /api/conversations/）
+作為：已登入使用者
+我想要：指定一個場景（scene）建立新對話
+以便於：之後對這個對話提交查詢、取得 AI 回覆
+```
+
+### 規則摘要
+
+- R1：需已登入；未登入回 403（`IsAuthenticated`，`SessionAuthentication` 未帶 `WWW-Authenticate` 挑戰，DRF 慣例回 403 而非 401）。
+- R2：`user` 一律取自 `request.user`，不接受 body 指定（即使夾帶也會被忽略，避免冒用他人身分建立對話）。
+- R3：`status` 一律為預設值 `open`，不可由 client 指定。
+- R4：`scene` 為必填，指向不存在的 `scene` id 回 400（`PrimaryKeyRelatedField` 預設驗證行為）。
+- R5：成功建立 → 回 201，body 為序列化後的 Conversation（`id`/`scene`/`status`/`created`/`modified`）。
+
+### Examples 表格
+
+| # | 情境類型 | Given（前置條件） | When（操作） | Then（預期結果） |
+|---|---|---|---|---|
+| 1 | Happy Path | 已登入使用者，`scene` 存在 | `POST /api/conversations/ { scene }` | 201；建立 Conversation，`user` 為目前登入者、`status` 為 `open` |
+| 2 | Edge Case（安全性） | 已登入使用者，body 額外夾帶 `user`（指向他人） | 提交建立請求 | 201；Conversation 的 `user` 仍為目前登入者，忽略 body 帶入的 `user` |
+| 3 | Negative（權限） | 未登入 | 提交建立請求 | 403 |
+| 4 | Negative | 已登入使用者，`scene` id 不存在 | 提交建立請求 | 400 |
+
+### Given-When-Then
+
+```gherkin
+Scenario: 已登入使用者建立新對話
+  Given 使用者已登入，且場景 "scene-1" 存在
+  When  使用者呼叫 POST /api/conversations/ { scene: "scene-1" }
+  Then  回應為 201
+  And   新建立的 Conversation.user 為目前登入的使用者
+  And   新建立的 Conversation.status 為 "open"
+
+Scenario: 建立對話時忽略 client 夾帶的 user 欄位
+  Given 使用者已登入，且場景 "scene-1" 存在
+  When  使用者呼叫 POST /api/conversations/ { scene: "scene-1", user: 其他使用者的 id }
+  Then  回應為 201
+  And   新建立的 Conversation.user 仍為目前登入的使用者，而非 body 指定的其他使用者
+
+Scenario: 未登入不可建立對話
+  Given 使用者未登入
+  When  呼叫 POST /api/conversations/ { scene: "scene-1" }
+  Then  回應為 403
+
+Scenario: 指定不存在的場景會被拒絕
+  Given 使用者已登入
+  And   scene id "00000000-0000-0000-0000-000000000000" 不存在
+  When  使用者呼叫 POST /api/conversations/ { scene: 該不存在的 id }
+  Then  回應為 400
+```
+
+---
+
 ## 待釐清問題（Open Questions）
 
 1. **併發提交的鎖定策略**：R1 的 409 檢查與 Message 建立在同一 transaction 內，但「檢查是否存在 PENDING AI Message」若無額外鎖定（如 `select_for_update` 鎖 Conversation 列），在高併發下是否仍可能出現兩個 transaction 都通過檢查後各自建立一筆 PENDING Message？需與 Dev 確認實際鎖定範圍。

@@ -78,7 +78,7 @@ Behold My Awesome Project!
 
 其餘已知但優先度較低、暫未另開 issue 的項目（詳見 `handoff.md` 各輪「待解決問題」段落）：
 
-- `POST /api/conversations/`（建立新對話端點）與 `metadata` 欄位（token 用量等）的實際寫入邏輯尚未實作。
+- `metadata` 欄位（token 用量等）的實際寫入邏輯尚未實作。
 - `get_provider` 的 `AI_BACKEND` 環境變數切換邏輯、`LiteLLMProvider` 分支、Scene 無啟用 `ModelRoute` 時的 edge case，皆未被任何測試涵蓋。
 - 併發鎖定（`select_for_update()`）目前僅以 `threading` 模擬驗證，未在真正多 process/多 worker 環境下壓測過。
 - Repo 尚未設定 branch protection，要求 CI 通過才能合併/push 到 `main`，避免技術債再度累積。

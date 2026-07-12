@@ -6,7 +6,6 @@ from typing import cast
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.generics import ListAPIView
 from rest_framework.generics import ListCreateAPIView
 from rest_framework.generics import RetrieveAPIView
 from rest_framework.generics import RetrieveUpdateAPIView
@@ -18,6 +17,7 @@ from rest_framework.views import APIView
 
 from maiagent_ai_django.api.permissions import IsAdmin
 from maiagent_ai_django.api.permissions import is_admin
+from maiagent_ai_django.api.serializers import ConversationCreateSerializer
 from maiagent_ai_django.api.serializers import ConversationSerializer
 from maiagent_ai_django.api.serializers import MessageSerializer
 from maiagent_ai_django.api.serializers import SceneConfigAdminSerializer
@@ -100,12 +100,19 @@ class ConversationCursorPagination(CursorPagination):
     page_size = 20
 
 
-class ConversationListView(ListAPIView):
-    """GET /api/conversations/。"""
+class ConversationListView(ListCreateAPIView):
+    """GET / POST /api/conversations/。"""
 
     permission_classes = [IsAuthenticated]
-    serializer_class = ConversationSerializer
     pagination_class = ConversationCursorPagination
+
+    def get_serializer_class(self):
+        if self.request.method == "POST":
+            return ConversationCreateSerializer
+        return ConversationSerializer
+
+    def perform_create(self, serializer):
+        serializer.save(user=self.request.user)
 
     def get_queryset(self):
         queryset = conversation_list_visible_to(user=cast("User", self.request.user))

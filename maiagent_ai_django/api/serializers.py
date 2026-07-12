@@ -18,6 +18,13 @@ class ConversationSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class ConversationCreateSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Conversation
+        fields = ["id", "scene", "status", "created", "modified"]
+        read_only_fields = ["id", "status", "created", "modified"]
+
+
 class MessageSerializer(serializers.ModelSerializer):
     class Meta:
         model = Message
