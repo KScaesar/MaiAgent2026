@@ -15,6 +15,8 @@ Container_Boundary(webapp, "Django App") {
     }
 
     Boundary(convPkg, "conversations") {
+        Component(convServices, "services", "Service (write)", "message_submit()：\n狀態機檢查、select_for_update\n交易鎖、建立訊息、派送任務")
+        Component(convSelectors, "selectors", "Selector (read)", "conversation_can_be_viewed_by()\nconversation_list_visible_to()\n角色權限矩陣/可見範圍查詢")
         Component(convSignals, "signals", "Django Signal", "維護 search_vector\n供全文檢索")
         Component(convModels, "models", "Django ORM", "Conversation/Message\nSceneConfig/ModelRoute\n狀態機、軟刪除 Manager")
         Component(convTasks, "tasks", "Celery Task", "generate_ai_reply：\n呼叫 provider、更新狀態\n失敗轉人工、廣播事件")
@@ -35,9 +37,14 @@ Container_Boundary(webapp, "Django App") {
 
 Rel(apiViews, apiPerm, "檢查角色權限")
 Rel(apiViews, apiSerializers, "序列化輸入/輸出")
-Rel(apiViews, convModels, "讀寫對話/訊息/場景")
+Rel(apiViews, convServices, "呼叫 message_submit()\n（寫入）")
+Rel(apiViews, convSelectors, "呼叫可見範圍/權限判斷\n（讀取）")
+Rel(apiViews, convModels, "以 id 查詢單筆物件")
 Rel(apiViews, rtTickets, "簽發 SSE ticket")
-Rel(apiViews, convTasks, "派送 .delay()")
+
+Rel(convServices, convModels, "交易內讀寫\nConversation/Message")
+Rel(convServices, convTasks, "派送 .delay()")
+Rel(convSelectors, convModels, "查詢 QuerySet")
 
 Rel(convTasks, convModels, "更新 Message 狀態與內容")
 Rel(convTasks, providerFactory, "取得對應 Scene 的 provider")
@@ -53,7 +60,8 @@ Rel(rtConsumer, rtTickets, "驗證 ticket")
 Rel(rtConsumer, convModels, "查詢初始訊息快照")
 
 ' 版面提示：api 在最上層；conversations 置中；realtime / ai_providers 並排在最下層(realtime 左、ai_providers 右)。
-' conversations 內部讓 models 貼左(面向 realtime)、tasks 貼右(面向 ai_providers)，
+' conversations 內部由左至右依序排列 services -> selectors -> models -> signals -> tasks，
+' 讓 services/selectors 貼近 apiViews（面向上方）、models 居中承接兩者、tasks 貼右(面向 ai_providers)，
 ' 兩條對外邊各自往同一側直線延伸，才不會在中間交叉成 X。
 ' convTasks<->rtConsumer<->convModels 的雙向依賴都共用 rtConsumer 這個節點，兩條邊會在 rtConsumer 匯聚而非彼此交叉；
 ' views 對外的多條邊也都共用 apiViews 同一起點，同理不會自我交叉。
@@ -63,6 +71,8 @@ Lay_R(rtPkg, providerPkg)
 
 Lay_R(apiViews, apiPerm)
 Lay_R(apiPerm, apiSerializers)
+Lay_R(convServices, convSelectors)
+Lay_R(convSelectors, convModels)
 Lay_U(convModels, convSignals)
 Lay_R(convModels, convTasks)
 Lay_R(providerFactory, providerLiteLLM)

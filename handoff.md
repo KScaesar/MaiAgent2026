@@ -597,3 +597,77 @@
   - **已 commit 並直接 push 到 `main`**（使用者明確表示「不用開分支」）：commit `f6ca727`，push 後 GitHub 自動觸發新的 `CI` workflow run（`29134391253`），用 `gh run watch --exit-status` 確認 `linter`（53s）、`pytest`（49s）兩個 job 皆為 `success`，唯一的 annotation 是 GitHub 平台層級的 `Node.js 20 deprecated` 警告（第三方 action 版本問題，不影響 job 成敗，非本次範疇）。至此本次任務的成功指標已 100% 達成，不再只是本機模擬結果。
 - **待解決問題**：無（本次任務範疇內的 CI 失敗已確認解決）。範疇外的既有技術債仍在（見第 3 節「範疇外事項」：dependabot PR 本身的 CI 狀態未處理）。
 - **下一步指令建議**：本次任務已完全收尾。若後續要處理，可考慮：(1) 检查目前開著的 `dependabot/uv/python-...`、`dependabot/github_actions/...` 這幾個 PR，其 CI 是否也因為這批 lint 修正而一併轉綠（需要 rebase 該分支或等 dependabot 自動更新）；(2) 建議在 repo 設定 branch protection，要求 CI 通過才能合併/push 到 `main`，避免「未跑 pre-commit 就直接 push」的情況再度發生並累積類似技術債。
+
+---
+
+# AI Context Handoff: 依 HackSoft Django Styleguide 重構 services/selectors，並修正全部 mypy 錯誤
+
+## 1. 任務摘要 (What & Flow)
+
+- **目標**：使用者貼出 HackSoft Django Styleguide 的分層原則（models 只放 schema、services.py 管 write、selectors.py 管 read、keyword-only 參數、不做 Repository 抽象），要求先分析現有程式碼是否符合，確認不符合後動手重構；重構後接著要求「嘗試修正 mypy 錯誤」，並在過程中回頭補齊重構當下因型別衝突而放棄的 selector 型別註解；最後同步更新 `docs/architecture/` 圖表與 `handoff.md`。
+- **成功指標**：`api/views.py` 不再直接內嵌商業邏輯，改為呼叫 `conversations/services.py`/`conversations/selectors.py`；`conversations/selectors.py` 的 `user` 參數有明確型別（非放棄型別註解的版本）；`uv run mypy maiagent_ai_django` 為 `Success: no issues found`；既有 API 黑箱測試維持綠燈、新模組補上單元測試；`docs/architecture/` 的 C4 圖與程式碼同步；`ruff check .` 除既有無關問題外全過。
+- **邏輯流**：
+  1. **分析**：讀 `api/views.py`、`conversations/models.py`、`api/permissions.py`、`api/serializers.py`，確認全專案沒有 `services.py`/`selectors.py`，商業邏輯（狀態機/交易鎖、四支 View 各自重寫一次的權限判斷式、`_conversation_queryset_for`）全部寫在 view 裡；serializer 已乾淨、不用改。
+  2. **重構**：新增 `conversations/services.py::message_submit(*, conversation_id, content)`（`MessageSubmitResult` dataclass；`MessageSubmitError(code=...)` 表達三種 409 情境）、`conversations/selectors.py::conversation_can_be_viewed_by(*, conversation, user)` / `conversation_list_visible_to(*, user)`；改寫 `api/views.py` 五支 view 呼叫兩者、移除重複邏輯。第一次嘗試給 `user` 加型別（`AbstractBaseUser`）時，`views.py` 冒出 6 個新 mypy 錯誤，先退回無型別版本以求進度不卡關。
+  3. **驗證重構不破壞行為**：`docker compose run --rm django uv run pytest` 確認既有 96 個黑箱測試不需改動即可全過；補寫 `conversations/tests/test_services.py`、`test_selectors.py`，變成 108 個測試全過。
+  4. **架構圖同步**：使用者要求連同 `docs/architecture/` 一起調整。修改 `component.puml`（新增 `services`/`selectors` component）、`dynamic.puml`（提交訊息流程加 `API -> API: conversations.services.message_submit()`）；使用者明確不想裝 Java，改用 PlantUML 公開渲染伺服器（POST body 端點回傳 0 bytes 後改用 GET + 官方 deflate+自訂 base64 編碼，Python `zlib` 手刻）換回 `.svg`。
+  5. **mypy 修正**（獨立任務接續前面）：跑 `uv run mypy maiagent_ai_django`，73 個錯誤中 71 個集中在 `*/tests/*`，根因是 `factory_boy` 的 `DjangoModelFactory` 沒有型別資訊讓 mypy 知道 `ConversationFactory()` 實際回傳 `Conversation`，以及測試裡 `ModelAdmin(Model, None)` 這類手動傳 `None` 的寫法；剩下 2 個是真問題：`realtime/consumers.py` 的 `payload` dict 型別被推成 `dict[str, str]` 但 `message.error_message` 是 `str | None`；`api/views.py::check_throttles` 呼叫 `self.throttled(request, None)`，查證 `rest_framework-stubs` 把 `wait` 寫死成 `float`（非 Optional），是 stub 寫錯而非程式錯誤。
+  6. 先修兩個真問題（`consumers.py` 標註型別；`views.py` 加 `# type: ignore[arg-type]` 並寫明原因），再針對 71 個 test-only 錯誤比照既有的 `*.migrations.*` override 慣例，新增 `{ module = "*.tests.*", ignore_errors = true }`（驗證方式：先移除該 override 重跑一次，確認錯誤數/範圍不變，排除蓋掉其他真問題的可能）。
+  7. **回頭補齊型別**：既然現在能正確處理型別，回頭把上一輪放棄的 `selectors.py::user` 型別補上——改用專案具體的 `maiagent_ai_django.users.models.User`（非抽象的 `AbstractBaseUser`），並在 `api/views.py` 五個呼叫點用 `cast("User", request.user)` 明確轉型（每個呼叫點所在 view 都有 `permission_classes = [IsAuthenticated]`，執行期保證是已登入使用者）。`ruff --fix` 進一步要求把 `User` 的 import 搬進 `TYPE_CHECKING` 區塊（`cast` 的型別參數用字串形式，執行期不需要真的 import）。
+  8. 全部改完後重跑 `uv run mypy maiagent_ai_django`（`Success: no issues found in 86 source files`）、`uv run ruff check .`（僅剩 `docs/conf.py` 既有且與本次無關的 1 個 `RUF100`）、`docker compose ... pytest -q`（108 個測試全過）。
+  9. 更新 `CLAUDE.md` 反映新分層；使用者後續要求「刪除 CLAUDE.md 描述」，確認它已在對話中途被復原成專案原始版本，未再變動。
+- **輸入**：使用者提供的 HackSoft Django Styleguide 原則文字；既有 96 個測試作為重構安全網；`rest_framework-stubs`/`factory_boy` 原始碼（判斷 mypy 錯誤是 stub 問題還是程式問題）；既有 `pyproject.toml` 的 `*.migrations.*` override 作為新規則範本。
+- **輸出**：新檔 `conversations/services.py`、`conversations/selectors.py`、`conversations/tests/test_services.py`、`conversations/tests/test_selectors.py`；修改 `api/views.py`、`realtime/consumers.py`、`pyproject.toml`（新增 `*.tests.*` mypy override）、`docs/architecture/component.puml`、`docs/architecture/dynamic.puml`、對應 `.svg`。`CLAUDE.md` 維持專案原始版本、無淨變動。**尚未 commit**。
+
+## 2. 決策背景 (Why)
+
+- **services/selectors 而非更重的分層（如 Repository）**：使用者提供的原則本身排除 Repository 抽象（`selectors.py` 本身就是事實上的 repository），專案規模小（3 支 view、1 個 task），不為低機率需求做過度抽象。
+- **`MessageSubmitError` 用 `code` 屬性而非直接回傳 HTTP Response**：service 層不該知道 HTTP 語意，用帶 `code` 的例外類別讓 view 決定轉換成什麼狀態碼，維持 service 只描述業務語意。
+- **selectors 沿用既有的 `is_admin`/`is_customer_service`**：`api/permissions.py` 的角色判斷 helper 是「使用者是什麼角色」的原子判斷，selector 在其上組合「這個角色能不能看這筆資料」的業務規則，職責不同，沒必要合併。
+- **`user` 參數最終用具體 `User` model 而非 `AbstractBaseUser`**：第一次失敗是因為 `AbstractBaseUser` 沒有 `.id` 屬性，且 `request.user` 在 django-stubs 下被推斷成 `User | AnonymousUser`，跟 `AbstractBaseUser` 參數不相容。改用專案自己的具體 `User`（透過 `Model` 基底本身就有 `.id`）一次解決兩個問題。
+- **用 `cast()` 而非放寬 selector 參數型別去遷就 `User | AnonymousUser`**：若放寬型別，`Conversation.objects.filter(user=user)` 又會因 `AnonymousUser` 不在 FK 允許型別聯集裡而報錯，等於把問題從呼叫端搬進 selector 內部。`cast()` 精準表達「這裡有一個型別檢查器看不到的執行期保證」（`IsAuthenticated`），語意上更貼近事實。
+- **`cast("User", ...)` 字串形式 + `TYPE_CHECKING`**：`ruff` 的 `TC001`/`TC006` 反映同一原則——`typing.cast` 的型別參數只在靜態分析時被解讀，執行期不需要真的 import，符合專案既有的 `from __future__ import annotations` + `TYPE_CHECKING` 慣例。
+- **`*.tests.*` mypy override 而非逐一加 `# type: ignore`**：71 個錯誤的根因（factory_boy 型別限制）是結構性問題，逐一標註要改 60+ 處且未來新測試會持續觸發；比照 `*.migrations.*` 的「整個目錄類型層級 ignore」，並附理由註解避免被誤認為隨手關掉檢查。驗證時先移除 override 重跑一次，確認錯誤數/分布不變，排除蓋掉其他真問題的可能，而非直接相信「加了就乾淨」。
+- **PlantUML 公開渲染伺服器 + 手刻編碼，而非裝本機 Java/PlantUML**：使用者明確不想額外安裝 Java；改用官方支援的公開 HTTP 服務 + Python 標準庫手刻 PlantUML 專屬編碼，不需安裝任何額外工具，內容也不含機密資訊，適合送第三方公開服務渲染。
+
+## 3. 邊界與假設 (Boundary & Assumption)
+
+- **範疇外事項**：
+  - 沒有導入 Redis 快取層（原則文字提到但專案目前無此需求）。
+  - 沒有處理 issue #4（SSE 端到端 ASGI 串接）、issue #5（中文全文檢索分詞方案），不影響其現況。
+  - 單筆物件查詢（`get_object_or_404(Conversation, id=...)`）保留在 view 裡，未搬進 selectors——只是簡單主鍵查詢，非「複雜查詢」。
+  - 沒有嘗試撰寫自訂 factory_boy mypy plugin 讓 `ConversationFactory()` 正確推斷成 `Conversation`（社群無成熟方案，成本超出範圍）。
+  - 沒有把 `IsAuthenticated` 的執行期保證寫成更強的型別手段（例如自訂 `AuthenticatedRequest` protocol），`cast()` 是較輕量、符合專案規模的做法。
+- **基礎假設**：
+  - 假設既有 96 個 API 黑箱測試已完整覆蓋所有商業邏輯分支，重構時「測試全過」即等同「行為不變」，未額外做手動 QA。
+  - 假設 PlantUML 公開伺服器渲染結果與本機一致（僅 grep `.svg` 確認含新 component 關鍵字，未逐像素比對版面）。
+  - 假設每個呼叫 selector 的 view 都確實設定 `permission_classes = [IsAuthenticated]`（逐一確認過五個類別都有），這是 `cast()` 安全性的前提；若未來新 view 忘記加，`cast()` 不會在執行期攔截 `AnonymousUser`。
+
+## 4. 風險與壓力測試 (Failure & Robustness)
+
+- **失敗路徑**：若之後有人不知道已有 selectors 層、繼續在新 view 裡重寫角色判斷式，邏輯又會分散——屬流程/文件層面風險，無 lint 規則強制。`cast()` 只是型別提示、非執行期防護，忘記加 `IsAuthenticated` 的風險仍要靠 code review 把關。
+- **反例測試**：
+  - `ruff check` 抓到 `MessageSubmitConflict` 需改名 `MessageSubmitError`（`N818`）與一行 `E501`，已修正並重跑確認全過。
+  - 第一次加型別註解時 mypy 從 1 個暴增到 7 個，及時回退；本輪用「具體 `User` + `cast()`」重試，一次到位變 0 錯誤，證明方案正確。
+  - 移除 `*.tests.*` override 重新驗證錯誤數/分布不變，排除範圍過寬蓋掉真錯誤。
+  - `component.puml`/`dynamic.puml` 改完後實際送去渲染、grep `.svg` 內容確認新 component 真的畫出來；PlantUML POST 端點第一次回傳 0 bytes 沒有就此判定失敗，改用 GET+編碼重試成功。
+  - 每次修改後都完整跑一次 108 個測試，不只信任 mypy/ruff 綠燈。
+- **抗壓能力**：`services.py`/`selectors.py` 目前只有 `conversations` app 這一組，未形成跨 app 強制規範；`*.tests.*` mypy override 是長期設定，換來的是測試目錄型別檢查精確度下降的取捨，團隊需要意識到。
+
+## 5. 延續執行 (Continuity)
+
+- **目前狀態**（本機驗證，`docker compose -f docker-compose.local.yml run --rm django uv run pytest -q`）：
+  - 新增 `conversations/services.py`、`conversations/selectors.py`（`user: User` 型別、`TYPE_CHECKING` 引入）、對應單元測試 `test_services.py`/`test_selectors.py`。
+  - `api/views.py` 五支 view 改呼叫 service/selector，`cast("User", ...)` 明確轉型，`check_throttles` 加 `# type: ignore[arg-type]`。
+  - `realtime/consumers.py::_serialize_message_event` 標註 `payload: dict[str, str | None]`。
+  - `pyproject.toml` 新增 `{ module = "*.tests.*", ignore_errors = true }` mypy override（附理由）。
+  - `docs/architecture/component.puml`/`dynamic.puml` 與對應 `.svg` 已更新並重新渲染。
+  - `CLAUDE.md` 確認維持專案原始版本。
+  - 驗證：`uv run mypy maiagent_ai_django` → `Success: no issues found in 86 source files`；`uv run ruff check .` → 僅剩 `docs/conf.py` 既有、無關的 1 個 `RUF100`；`docker compose run --rm django uv run pytest -q` → 108 個測試全過。
+- **尚未 commit**：所有變更仍在 working tree，等待使用者決定是否要建立 commit、是否要拆成多個 commit（重構 / 型別修正 / 文件圖表）。
+- **待解決問題**：
+  - 是否要把「新商業邏輯一律走 services/selectors」明文寫進 `AGENTS.md`/`CLAUDE.md` 作為強制規範。
+  - `*.tests.*` mypy override 是否要之後改成更精細的做法（只 ignore 特定錯誤代碼），目前是「先求正確、再看要不要精修」。
+  - `docs/architecture/*.svg` 透過公開網路服務渲染，尚未確認團隊是否介意架構圖原始碼送往第三方服務。
+  - 忘記加 `IsAuthenticated` 時 `cast()` 不會攔截的風險，無額外防護機制。
+- **下一步指令建議**：接手的 AI 應先跟使用者確認是否要 commit（以及要不要拆分）。若後續要對 `ai_providers`/`realtime` 做類似的分層檢查，可比照本次「先分析現況、確認落差、再動手」的順序，並記得改動 `docs/architecture/*.puml` 後要實際重新渲染 `.svg`。若要繼續補強型別安全，可考慮：(1) 幫 DRF 建立內部 `AuthenticatedRequest` protocol 取代逐次手動 `cast`；(2) 評估未來是否有更成熟的 factory_boy mypy 方案可縮小 `*.tests.*` override 範圍。

@@ -26,6 +26,7 @@ SSE --> Client : text/event-stream(初始快照)
 
 == 提交訊息 ==
 Client -> API : POST /conversations/{id}/messages/\n{ content }
+API -> API : conversations.services.message_submit()
 API -> DB : select_for_update 檢查狀態機\n(closed / pending_human / reply_in_progress)
 API -> DB : 建立 user message(completed)\n+ ai message(pending)
 API -> Worker : generate_ai_reply.delay(ai_message_id)

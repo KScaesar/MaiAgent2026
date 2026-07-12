@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
+from typing import cast
 
-from django.db import transaction
 from django.shortcuts import get_object_or_404
 from rest_framework import status
 from rest_framework.exceptions import PermissionDenied
@@ -18,7 +18,6 @@ from rest_framework.views import APIView
 
 from maiagent_ai_django.api.permissions import IsAdmin
 from maiagent_ai_django.api.permissions import is_admin
-from maiagent_ai_django.api.permissions import is_customer_service
 from maiagent_ai_django.api.serializers import ConversationSerializer
 from maiagent_ai_django.api.serializers import MessageSerializer
 from maiagent_ai_django.api.serializers import SceneConfigAdminSerializer
@@ -27,11 +26,16 @@ from maiagent_ai_django.api.serializers import SubmitMessageSerializer
 from maiagent_ai_django.conversations.models import Conversation
 from maiagent_ai_django.conversations.models import Message
 from maiagent_ai_django.conversations.models import SceneConfig
-from maiagent_ai_django.conversations.tasks import generate_ai_reply
+from maiagent_ai_django.conversations.selectors import conversation_can_be_viewed_by
+from maiagent_ai_django.conversations.selectors import conversation_list_visible_to
+from maiagent_ai_django.conversations.services import MessageSubmitError
+from maiagent_ai_django.conversations.services import message_submit
 from maiagent_ai_django.realtime.tickets import issue_ticket
 
 if TYPE_CHECKING:
     import uuid
+
+    from maiagent_ai_django.users.models import User
 
 
 class ConversationMessagesView(APIView):
@@ -43,17 +47,10 @@ class ConversationMessagesView(APIView):
 
     def get(self, request, conversation_id: uuid.UUID):
         conversation = get_object_or_404(Conversation, id=conversation_id)
-        user = request.user
-        allowed = (
-            conversation.user_id == user.id
-            or is_admin(user)
-            or (
-                is_customer_service(user)
-                and conversation.scene.scene_type
-                == SceneConfig.SceneType.CUSTOMER_SERVICE
-            )
-        )
-        if not allowed:
+        if not conversation_can_be_viewed_by(
+            conversation=conversation,
+            user=cast("User", request.user),
+        ):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         paginator = ConversationCursorPagination()
@@ -69,7 +66,9 @@ class ConversationMessagesView(APIView):
         # (e.g. in tests) don't blow up with AttributeError.
         for throttle in self.get_throttles():
             if not throttle.allow_request(request, self):
-                self.throttled(request, None)
+                # djangorestframework-stubs types `wait` as `float`, but DRF itself
+                # accepts `None` (Throttled(wait=None) is valid) when unknown.
+                self.throttled(request, None)  # type: ignore[arg-type]
 
     def post(self, request, conversation_id: uuid.UUID):
         serializer = SubmitMessageSerializer(data=request.data)
@@ -79,49 +78,18 @@ class ConversationMessagesView(APIView):
         if conversation.user_id != request.user.id:
             return Response(status=status.HTTP_403_FORBIDDEN)
 
-        with transaction.atomic():
-            conversation = Conversation.objects.select_for_update().get(
-                id=conversation_id,
-            )
-
-            if conversation.status == Conversation.Status.CLOSED:
-                return Response(
-                    {"code": "conversation_closed"},
-                    status=status.HTTP_409_CONFLICT,
-                )
-            if conversation.status == Conversation.Status.PENDING_HUMAN:
-                return Response(
-                    {"code": "pending_human"},
-                    status=status.HTTP_409_CONFLICT,
-                )
-            if conversation.messages.filter(
-                sender_type=Message.SenderType.AI,
-                status=Message.Status.PENDING,
-            ).exists():
-                return Response(
-                    {"code": "reply_in_progress"},
-                    status=status.HTTP_409_CONFLICT,
-                )
-
-            user_message = Message.objects.create(
-                conversation=conversation,
-                sender_type=Message.SenderType.USER,
+        try:
+            result = message_submit(
+                conversation_id=conversation_id,
                 content=serializer.validated_data["content"],
-                status=Message.Status.COMPLETED,
             )
-            ai_message = Message.objects.create(
-                conversation=conversation,
-                sender_type=Message.SenderType.AI,
-                content="",
-                status=Message.Status.PENDING,
-            )
-
-        generate_ai_reply.delay(str(ai_message.id))
+        except MessageSubmitError as exc:
+            return Response({"code": exc.code}, status=status.HTTP_409_CONFLICT)
 
         return Response(
             {
-                "user_message_id": str(user_message.id),
-                "ai_message_id": str(ai_message.id),
+                "user_message_id": str(result.user_message_id),
+                "ai_message_id": str(result.ai_message_id),
             },
             status=status.HTTP_202_ACCEPTED,
         )
@@ -132,17 +100,6 @@ class ConversationCursorPagination(CursorPagination):
     page_size = 20
 
 
-def _conversation_queryset_for(user):
-    """依角色回傳 Conversation 的可見範圍（權限矩陣核心邏輯）。"""
-    if is_admin(user):
-        return Conversation.objects.all()
-    if is_customer_service(user):
-        return Conversation.objects.filter(
-            scene__scene_type=SceneConfig.SceneType.CUSTOMER_SERVICE,
-        )
-    return Conversation.objects.filter(user=user)
-
-
 class ConversationListView(ListAPIView):
     """GET /api/conversations/。"""
 
@@ -151,7 +108,7 @@ class ConversationListView(ListAPIView):
     pagination_class = ConversationCursorPagination
 
     def get_queryset(self):
-        queryset = _conversation_queryset_for(self.request.user)
+        queryset = conversation_list_visible_to(user=cast("User", self.request.user))
 
         scene_id = self.request.query_params.get("scene")
         if scene_id:
@@ -185,17 +142,10 @@ class ConversationDetailView(RetrieveAPIView):
             Conversation,
             id=self.kwargs["conversation_id"],
         )
-        user = self.request.user
-        allowed = (
-            conversation.user_id == user.id
-            or is_admin(user)
-            or (
-                is_customer_service(user)
-                and conversation.scene.scene_type
-                == SceneConfig.SceneType.CUSTOMER_SERVICE
-            )
-        )
-        if not allowed:
+        if not conversation_can_be_viewed_by(
+            conversation=conversation,
+            user=cast("User", self.request.user),
+        ):
             raise PermissionDenied
         return conversation
 
@@ -246,18 +196,10 @@ class MessageDetailView(RetrieveAPIView):
 
     def get_object(self):
         message = get_object_or_404(Message, id=self.kwargs["message_id"])
-        conversation = message.conversation
-        user = self.request.user
-        allowed = (
-            conversation.user_id == user.id
-            or is_admin(user)
-            or (
-                is_customer_service(user)
-                and conversation.scene.scene_type
-                == SceneConfig.SceneType.CUSTOMER_SERVICE
-            )
-        )
-        if not allowed:
+        if not conversation_can_be_viewed_by(
+            conversation=message.conversation,
+            user=cast("User", self.request.user),
+        ):
             raise PermissionDenied
         return message
 
@@ -269,17 +211,8 @@ class SSETicketView(APIView):
 
     def post(self, request, conversation_id: uuid.UUID):
         conversation = get_object_or_404(Conversation, id=conversation_id)
-        user = request.user
-        allowed = (
-            conversation.user_id == user.id
-            or is_admin(user)
-            or (
-                is_customer_service(user)
-                and conversation.scene.scene_type
-                == SceneConfig.SceneType.CUSTOMER_SERVICE
-            )
-        )
-        if not allowed:
+        user = cast("User", request.user)
+        if not conversation_can_be_viewed_by(conversation=conversation, user=user):
             return Response(status=status.HTTP_403_FORBIDDEN)
 
         ticket = issue_ticket(user_id=user.id, conversation_id=conversation.id)

@@ -16,7 +16,10 @@ def group_name_for(conversation_id) -> str:
 
 
 def _serialize_message_event(message: Message) -> dict:
-    payload = {"message_id": str(message.id), "status": message.status}
+    payload: dict[str, str | None] = {
+        "message_id": str(message.id),
+        "status": message.status,
+    }
     if message.status == Message.Status.COMPLETED:
         payload["content"] = message.content
     elif message.status == Message.Status.FAILED:

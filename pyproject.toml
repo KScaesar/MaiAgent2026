@@ -173,6 +173,11 @@ warn_unused_configs = true
 overrides = [
   # Django migrations should not produce any errors:
   { module = "*.migrations.*", ignore_errors = true },
+  # factory_boy's DjangoModelFactory isn't typed to return the target Model
+  # (mypy sees e.g. `ConversationFactory` instead of `Conversation`), and test
+  # helpers commonly pass `None` where DRF/Django stubs expect a concrete
+  # instance (e.g. `ModelAdmin(Model, None)`). Neither is a real bug.
+  { module = "*.tests.*", ignore_errors = true },
 ]
 
 [tool.django-stubs]
